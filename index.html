@@ -413,7 +413,10 @@
       latestHairMasks = hairPixels;
       latestSelectedHairMask = null;
       const sourcePixels = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
-      const bodyOwner = hair === 'a' ? 0 : hair === 'b' ? 1 : t < .5 ? 0 : 1;
+      // The face slider chooses the underlying skin and body. Hair choice only
+      // supplies the separate hair overlay; otherwise switching hairstyles
+      // exposes the other person's forehead around the face-oval feather.
+      const bodyOwner = t < .5 ? 0 : 1;
       const studioBackground = document.querySelector('input[name="background"]:checked').value === 'studio';
       const bodyMask = studioBackground ? warpedMask(faces[bodyOwner], 'bodyMask', mid) : null;
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
