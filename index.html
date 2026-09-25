@@ -44,8 +44,12 @@
     .hair-choice label:has(input:checked) { border-color: #315eb8; background: #eef4ff; color: #244d9d; font-weight: 700; }
     .hair-choice label:has(input:disabled) { opacity: .55; cursor: not-allowed; }
     .hair-choice input { accent-color: #315eb8; margin-right: 5px; }
+    .hair-position { margin-top: 18px; }
+    .hair-position output { font-size: .85rem; }
     .tips { background: #f3f7fe; border: 1px solid #dce8fa; border-radius: 12px; margin-top: 24px; padding: 15px; color: #4b5d79; font-size: .86rem; line-height: 1.5; }
     .tips strong { color: #233752; }
+    .photo-advice { background: #fff8e9; border: 1px solid #f1dbab; border-radius: 12px; margin-top: 16px; padding: 13px 15px; color: #665125; font-size: .84rem; line-height: 1.5; }
+    .photo-advice[hidden] { display: none; }
     .result-frame { aspect-ratio: 1; background: #e6ebf2; border-radius: 14px; overflow: hidden; position: relative; display: grid; place-items: center; }
     canvas { display: block; width: 100%; height: 100%; }
     .placeholder { position: absolute; text-align: center; padding: 30px; color: #64758e; max-width: 290px; line-height: 1.5; }
@@ -91,7 +95,9 @@
           <label><input type="radio" name="hair" value="b">Face B</label>
           <label><input type="radio" name="hair" value="reference" disabled>Hair reference</label>
         </div></fieldset>
+        <div class="hair-position"><div class="control-heading"><label for="hairPosition">Move selected hair up or down</label><output id="hairPositionValue" for="hairPosition">Centered</output></div><input id="hairPosition" type="range" min="-30" max="30" value="0"><div class="ends"><span>Higher</span><span>Lower</span></div></div>
         <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
+        <div id="photoAdvice" class="photo-advice" role="status" hidden></div>
         <div class="finish-panel">
           <strong>3. Refine the blend</strong>
           <p>Applies a final, gentle complexion correction to the live preview while keeping its facial features and hair choice. Everything runs in your browser.</p>
@@ -119,6 +125,9 @@
     const download = document.querySelector('#download');
     const slider = document.querySelector('#blend');
     const percent = document.querySelector('#percent');
+    const hairPosition = document.querySelector('#hairPosition');
+    const hairPositionValue = document.querySelector('#hairPositionValue');
+    const photoAdvice = document.querySelector('#photoAdvice');
     const generate = document.querySelector('#generate');
     const finishedCanvas = document.querySelector('#finished');
     const finishedContext = finishedCanvas.getContext('2d');
@@ -228,6 +237,15 @@
       const angle = Math.atan2(right.y - left.y, right.x - left.x);
       const eyeDistance = Math.hypot(right.x - left.x, right.y - left.y);
       if (eyeDistance < 12) throw new Error('This face is too small in the photo. Try a closer picture.');
+      const nose = point(1), upperLip = point(13), lowerLip = point(14);
+      const mouthLeft = point(61), mouthRight = point(291);
+      const mouthWidth = Math.max(1, Math.hypot(mouthRight.x-mouthLeft.x, mouthRight.y-mouthLeft.y));
+      const quality = {
+        yaw: (nose.x-midX)/eyeDistance,
+        roll: angle,
+        mouthOpen: Math.hypot(upperLip.x-lowerLip.x, upperLip.y-lowerLip.y)/mouthWidth,
+        eyeDistance
+      };
       const scale = Math.min(4, 170 / eyeDistance), cos = Math.cos(angle) * scale, sin = Math.sin(angle) * scale;
       const tx = SIZE / 2 - cos * midX - sin * midY;
       const ty = 260 + sin * midX - cos * midY;
@@ -245,7 +263,19 @@
       const anchors = [0, 160, 320, 480, 640];
       for (const x of anchors) { pts.push({x, y: 0}, {x, y: SIZE}); }
       for (const y of anchors.slice(1, -1)) { pts.push({x: 0, y}, {x: SIZE, y}); }
-      return { aligned, pts };
+      return { aligned, pts, quality };
+    }
+    function updatePhotoAdvice() {
+      if (!faces[0] || !faces[1]) { photoAdvice.hidden = true; return; }
+      const a = faces[0].quality, b = faces[1].quality;
+      const warnings = [];
+      if (Math.abs(a.yaw-b.yaw) > .16 || Math.abs(a.roll-b.roll) > .16) warnings.push('different head angles');
+      if (Math.abs(a.mouthOpen-b.mouthOpen) > .12) warnings.push('different expressions');
+      if (Math.min(a.eyeDistance,b.eyeDistance) < 65) warnings.push('a face that is small in its photo');
+      const hair = document.querySelector('input[name="hair"]:checked').value;
+      if (hair === 'reference' && faces[2] && Math.abs(faces[2].quality.yaw-(a.yaw+b.yaw)/2) > .19) warnings.push('a hair reference photographed from a different angle');
+      photoAdvice.hidden = warnings.length === 0;
+      if (warnings.length) photoAdvice.textContent = `These photos may be harder to blend because of ${warnings.join(', ')}. You can still use them, or try photos with a similar pose and expression.`;
     }
     function affine(g, src, dst) {
       const [p, q, r] = src, [a, b, c] = dst;
@@ -275,6 +305,17 @@
       g.closePath(); g.clip();
       if (affine(g, source, target)) g.drawImage(image, 0, 0);
       g.restore();
+    }
+    function moveHairLayer(source, offset) {
+      if (!offset) return source;
+      const moved = document.createElement('canvas');
+      moved.width = moved.height = SIZE;
+      const g = moved.getContext('2d');
+      g.drawImage(source, 0, offset);
+      // Extend the outermost row so shifting the photo cannot leave an empty band.
+      if (offset > 0) g.drawImage(source, 0, 0, SIZE, 1, 0, 0, SIZE, offset);
+      else g.drawImage(source, 0, SIZE-1, SIZE, 1, 0, SIZE+offset, SIZE, -offset);
+      return moved;
     }
     function render() {
       scheduled = false;
@@ -308,6 +349,8 @@
           drawTriangle(hairContext, faces[2].aligned, ids.map(j => faces[2].pts[j]), ids.map(j => mid[j]));
         }
       }
+      const hairOffset = Number(hairPosition.value);
+      hairLayer = moveHairLayer(hairLayer, hairOffset);
       const preview = ctx.getImageData(0, 0, SIZE, SIZE);
       const background = hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
       const boundary = faceOvalMask(mid, .96, 15);
@@ -323,7 +366,7 @@
         const maskContext = warpedMask.getContext('2d');
         for (let i = 0; i < triangleIndices.length; i += 3) {
           const ids = [triangleIndices[i], triangleIndices[i+1], triangleIndices[i+2]];
-          drawTriangle(maskContext, hairFace.hairMask, ids.map(j => hairFace.pts[j]), ids.map(j => mid[j]));
+          drawTriangle(maskContext, hairFace.hairMask, ids.map(j => hairFace.pts[j]), ids.map(j => ({x:mid[j].x, y:mid[j].y+hairOffset})));
         }
         const overlay = document.createElement('canvas');
         overlay.width = overlay.height = SIZE;
@@ -335,6 +378,7 @@
         ctx.drawImage(overlay, 0, 0);
       }
       frame.classList.add('ready');
+      updatePhotoAdvice();
       download.disabled = false;
       generate.disabled = finishing;
       setStatus(hairFace?.maskFailed ? 'Ready to download. Hair edges use approximate alignment.' : hairFace?.hairMask ? 'Ready to download.' : 'Ready to download. Detecting hair edges…');
@@ -478,6 +522,7 @@
       invalidateFinished();
       if (index !== 2) {
         faces[index] = null;
+        updatePhotoAdvice();
         generate.disabled = true;
         download.disabled = true;
         frame.classList.remove('ready');
@@ -501,6 +546,8 @@
           const option = document.querySelector('input[name="hair"][value="reference"]');
           option.disabled = false;
           option.checked = true;
+          hairPosition.value = '0';
+          hairPositionValue.textContent = 'Centered';
         }
         if (faces[0] && faces[1]) scheduleRender();
         else setStatus('Add the second photo.');
@@ -531,9 +578,17 @@
       scheduleRender();
     });
     document.querySelectorAll('input[name="hair"]').forEach(option => option.addEventListener('change', () => {
+      hairPosition.value = '0';
+      hairPositionValue.textContent = 'Centered';
       invalidateFinished();
       scheduleRender();
     }));
+    hairPosition.addEventListener('input', () => {
+      const offset = Number(hairPosition.value);
+      hairPositionValue.textContent = offset < 0 ? `Up ${-offset}` : offset > 0 ? `Down ${offset}` : 'Centered';
+      invalidateFinished();
+      scheduleRender();
+    });
     previewTab.addEventListener('click', () => setView('preview'));
     finishedTab.addEventListener('click', () => setView('finished'));
     generate.addEventListener('click', async () => {
