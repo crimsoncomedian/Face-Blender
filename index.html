@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111d2f">
-  <title>Face Blend Studio</title>
+  <title>Face Blend Studio — Free</title>
   <style>
     :root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172338; background: #f2f5f9; }
     * { box-sizing: border-box; }
@@ -33,6 +33,12 @@
     .control-heading output { color: #315eb8; }
     input[type="range"] { width: 100%; margin: 17px 0 8px; accent-color: #315eb8; cursor: pointer; }
     .ends { display: flex; justify-content: space-between; color: #63738c; font-size: .82rem; }
+    .hair-choice { border: 0; padding: 0; margin: 22px 0 0; }
+    .hair-choice legend { font-weight: 700; font-size: .94rem; margin-bottom: 10px; }
+    .hair-choice .options { display: flex; flex-wrap: wrap; gap: 8px; }
+    .hair-choice label { cursor: pointer; border: 1px solid #cad6e9; border-radius: 9px; padding: 9px 12px; color: #3b4d69; font-size: .85rem; }
+    .hair-choice label:has(input:checked) { border-color: #315eb8; background: #eef4ff; color: #244d9d; font-weight: 700; }
+    .hair-choice input { accent-color: #315eb8; margin-right: 5px; }
     .tips { background: #f3f7fe; border: 1px solid #dce8fa; border-radius: 12px; margin-top: 24px; padding: 15px; color: #4b5d79; font-size: .86rem; line-height: 1.5; }
     .tips strong { color: #233752; }
     .result-frame { aspect-ratio: 1; background: #e6ebf2; border-radius: 14px; overflow: hidden; position: relative; display: grid; place-items: center; }
@@ -60,7 +66,7 @@
   </style>
 </head>
 <body>
-  <header><h1>Face Blend Studio</h1><p>Two photos. One blended face.</p></header>
+  <header><h1>Face Blend Studio</h1><p>Two photos. One blended face. Free and processed in your browser.</p></header>
   <main>
     <p class="intro">Add a clear photo of each person. Use the slider for an instant preview, then make one finished face when you like the mix.</p>
     <div class="grid">
@@ -74,10 +80,15 @@
         <div class="control-heading"><label for="blend">2. Choose the mix</label><output id="percent" for="blend">50% / 50%</output></div>
         <input id="blend" type="range" min="0" max="100" value="50" aria-label="Amount of Face B">
         <div class="ends"><span>Face A</span><span>Face B</span></div>
+        <fieldset class="hair-choice"><legend>Choose the hair separately</legend><div class="options">
+          <label><input type="radio" name="hair" value="mix" checked>Blend hair</label>
+          <label><input type="radio" name="hair" value="a">Face A hair</label>
+          <label><input type="radio" name="hair" value="b">Face B hair</label>
+        </div></fieldset>
         <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
         <div class="finish-panel">
           <strong>3. Make one face</strong>
-          <p>Use the chosen facial shape and combine details into one portrait. This runs in your browser; no account, API key, or paid service.</p>
+          <p>Combines one set of sharp facial details with complexion sampled from both faces. Hair follows your separate choice. Everything runs in your browser.</p>
           <button id="generate" disabled>Make one face</button>
         </div>
       </section>
@@ -110,6 +121,7 @@
     const layers = [document.createElement('canvas'), document.createElement('canvas')];
     layers.forEach(c => { c.width = c.height = SIZE; });
     const faces = [null, null];
+    const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
     let detectorPromise, triangleIndices, scheduled = false, generation = [0, 0];
     let finished = false, finishing = false;
 
@@ -245,6 +257,17 @@
       ctx.globalAlpha = t;
       ctx.drawImage(layers[1], 0, 0);
       ctx.globalAlpha = 1;
+      const hair = document.querySelector('input[name="hair"]:checked').value;
+      if (hair !== 'mix') {
+        const preview = ctx.getImageData(0, 0, SIZE, SIZE);
+        const background = layers[hair === 'a' ? 0 : 1].getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        const boundary = faceOvalMask(mid, .96, 15);
+        for (let i = 0; i < preview.data.length; i += 4) {
+          const face = boundary[i+3] / 255;
+          for (let j = 0; j < 3; j++) preview.data[i+j] = background[i+j]*(1-face) + preview.data[i+j]*face;
+        }
+        ctx.putImageData(preview, 0, 0);
+      }
       frame.classList.add('ready');
       download.disabled = false;
       generate.disabled = finishing;
@@ -268,17 +291,70 @@
       g.filter = 'none';
       return g.getImageData(0, 0, SIZE, SIZE).data;
     }
-    function blurredPixels(image, radius) {
-      const canvas = document.createElement('canvas');
-      canvas.width = canvas.height = SIZE;
-      const g = canvas.getContext('2d');
-      g.filter = `blur(${radius}px)`;
-      g.drawImage(image, 0, 0);
-      return g.getImageData(0, 0, SIZE, SIZE).data;
+    function traceFaceOval(g, shape, scale) {
+      const cx = OVAL.reduce((n, i) => n + shape[i].x, 0) / OVAL.length;
+      const cy = OVAL.reduce((n, i) => n + shape[i].y, 0) / OVAL.length;
+      g.beginPath();
+      OVAL.forEach((i, n) => {
+        const x = cx + (shape[i].x - cx)*scale;
+        const y = cy + (shape[i].y - cy)*scale;
+        n ? g.lineTo(x, y) : g.moveTo(x, y);
+      });
+      g.closePath();
+    }
+    function faceOvalMask(shape, scale, blur) {
+      return softMask(g => { traceFaceOval(g, shape, scale); g.fill(); }, blur);
+    }
+    const srgbToLinear = c => { const v = c / 255; return v <= .04045 ? v / 12.92 : ((v+.055)/1.055)**2.4; };
+    const linearToSrgb = v => { const n = Math.max(0, Math.min(1, v)); return 255*(n <= .0031308 ? 12.92*n : 1.055*n**(1/2.4)-.055); };
+    function toOklab(r, g, b) {
+      r=srgbToLinear(r); g=srgbToLinear(g); b=srgbToLinear(b);
+      const l=Math.cbrt(.4122214708*r+.5363325363*g+.0514459929*b);
+      const m=Math.cbrt(.2119034982*r+.6806995451*g+.1073969566*b);
+      const s=Math.cbrt(.0883024619*r+.2817188376*g+.6299787005*b);
+      return [.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s];
+    }
+    function fromOklab(L, a, b) {
+      const l=(L+.3963377774*a+.2158037573*b)**3;
+      const m=(L-.1055613458*a-.0638541728*b)**3;
+      const s=(L-.0894841775*a-1.291485548*b)**3;
+      return [linearToSrgb(4.0767416621*l-3.3077115913*m+.2309699292*s),linearToSrgb(-1.2684380046*l+2.6097574011*m-.3413193965*s),linearToSrgb(-.0041960863*l-.7034186147*m+1.707614701*s)];
+    }
+    function cheekColor(pixels, shape) {
+      const channels = [[], [], []];
+      const nose = shape[1], mouth = shape[13];
+      const y = nose.y*.55 + mouth.y*.45;
+      for (const side of [234,454]) {
+        const x = nose.x*.47 + shape[side].x*.53;
+        for (let dy = -9; dy <= 9; dy += 3) for (let dx = -9; dx <= 9; dx += 3) {
+          if (dx*dx+dy*dy > 100) continue;
+          const px = Math.round(x+dx), py = Math.round(y+dy);
+          if (px < 0 || px >= SIZE || py < 0 || py >= SIZE) continue;
+          const i = (py*SIZE+px)*4;
+          const lab = toOklab(pixels[i], pixels[i+1], pixels[i+2]);
+          if (lab[0] < .18 || lab[0] > .96) continue;
+          for (let k = 0; k < 3; k++) channels[k].push(lab[k]);
+        }
+      }
+      if (!channels[0].length) return toOklab(170, 130, 115);
+      return channels.map(a => { a.sort((x,y) => x-y); return a[Math.floor(a.length*.5)]; });
+    }
+    function skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy) {
+      return softMask(g => {
+        traceFaceOval(g, shape, .98); g.fill();
+        g.globalCompositeOperation = 'destination-out';
+        for (const ends of [[33,133],[362,263]]) {
+          const a = shape[ends[0]], b = shape[ends[1]];
+          const x = (a.x+b.x)/2, y=(a.y+b.y)/2;
+          const radius = Math.hypot(a.x-b.x,a.y-b.y)*.76;
+          g.beginPath(); g.ellipse(x, y, Math.max(17,radius),Math.max(13,radius*.55),0,0,Math.PI*2); g.fill();
+        }
+        g.beginPath(); g.ellipse(mouthX,mouthY,mouthRx*1.08,mouthRy*1.08,0,0,Math.PI*2); g.fill();
+      }, 8);
     }
     function makeSingleFace() {
-      // Keep one aligned, warped face's fine texture. Blend the other face's
-      // broad coloring and transfer an entire feature without double exposure.
+      // Keep one sharp face, recolor its skin in perceptual space, and use
+      // an independent hair layer. The second mouth contributes detail.
       const t = Number(slider.value) / 100;
       const donor = t <= .5 ? 0 : 1;
       const other = 1 - donor;
@@ -287,43 +363,45 @@
         x: p.x * (1 - t) + faces[1].pts[i].x * t,
         y: p.y * (1 - t) + faces[1].pts[i].y * t
       }));
-      const oval = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-      const cx = oval.reduce((n, i) => n + shape[i].x, 0) / oval.length;
-      const cy = oval.reduce((n, i) => n + shape[i].y, 0) / oval.length;
-      const faceMask = softMask(g => {
-        g.beginPath();
-        oval.forEach((i, n) => {
-          const x = cx + (shape[i].x - cx) * .92;
-          const y = cy + (shape[i].y - cy) * .92;
-          n ? g.lineTo(x, y) : g.moveTo(x, y);
-        });
-        g.closePath(); g.fill();
-      }, 17);
+      const faceMask = faceOvalMask(shape, .96, 15);
       const mouthCenter = {x:(shape[61].x + shape[291].x)/2, y:(shape[0].y + shape[17].y)/2};
       const mouthRx = Math.max(17, Math.hypot(shape[61].x-shape[291].x, shape[61].y-shape[291].y)*.68);
       const mouthRy = Math.max(16, Math.hypot(shape[0].x-shape[17].x, shape[0].y-shape[17].y)*1.16);
       const mouthMask = softMask(g => {
         g.beginPath(); g.ellipse(mouthCenter.x, mouthCenter.y, mouthRx, mouthRy, 0, 0, Math.PI*2); g.fill();
       }, 7);
-      const primary = layers[donor].getContext('2d').getImageData(0, 0, SIZE, SIZE);
-      const secondary = layers[other].getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-      const lowPrimary = blurredPixels(layers[donor], 21);
-      const lowSecondary = blurredPixels(layers[other], 21);
-      const pixels = primary.data;
-      const toneStrength = contribution * 1.45;
+      const skinMask = skinMaskFor(shape, mouthCenter.x, mouthCenter.y, mouthRx, mouthRy);
+      const images = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      const sampled = images.map(pixels => cheekColor(pixels, shape));
+      const target = sampled[0].map((value, i) => value*(1-t) + sampled[1][i]*t);
+      const donorShift = target.map((value, i) => value-sampled[donor][i]);
+      const otherShift = target.map((value, i) => value-sampled[other][i]);
+      const hair = document.querySelector('input[name="hair"]:checked').value;
+      const background = hair === 'mix' ? ctx.getImageData(0, 0, SIZE, SIZE).data : images[hair === 'a' ? 0 : 1];
+      const output = finishedContext.createImageData(SIZE, SIZE);
+      output.data.set(background);
+      const pixels = output.data;
       const featureStrength = Math.min(1, contribution * 2.35);
       for (let i = 0; i < pixels.length; i += 4) {
         const face = faceMask[i+3] / 255;
-        const mouth = mouthMask[i+3] / 255 * featureStrength * face;
         if (face < .002) continue;
+        const mouth = mouthMask[i+3] / 255 * featureStrength;
+        const skin = skinMask[i+3] / 255;
+        const donorLab = toOklab(images[donor][i],images[donor][i+1],images[donor][i+2]);
+        const corrected = fromOklab(donorLab[0]+donorShift[0]*skin, donorLab[1]+donorShift[1]*skin, donorLab[2]+donorShift[2]*skin);
+        let feature = null;
+        if (mouth > .002) {
+          const otherLab = toOklab(images[other][i],images[other][i+1],images[other][i+2]);
+          feature = fromOklab(otherLab[0]+otherShift[0],otherLab[1]+otherShift[1],otherLab[2]+otherShift[2]);
+        }
         for (let channel = 0; channel < 3; channel++) {
           const j = i + channel;
-          const tone = Math.max(-42, Math.min(42, lowSecondary[j] - lowPrimary[j])) * toneStrength * face;
-          const coherentFeature = secondary[j] + Math.max(-35, Math.min(35, lowPrimary[j]-lowSecondary[j]));
-          pixels[j] = pixels[j] + tone + (coherentFeature - pixels[j]) * mouth;
+          const facialDetail = feature ? corrected[channel]*(1-mouth) + feature[channel]*mouth : corrected[channel];
+          pixels[j] = background[j]*(1-face) + facialDetail*face;
         }
+        pixels[i+3] = 255;
       }
-      finishedContext.putImageData(primary, 0, 0);
+      finishedContext.putImageData(output, 0, 0);
       finished = true;
       finishedTab.disabled = false;
       setView('finished');
@@ -371,6 +449,10 @@
       invalidateFinished();
       scheduleRender();
     });
+    document.querySelectorAll('input[name="hair"]').forEach(option => option.addEventListener('change', () => {
+      invalidateFinished();
+      scheduleRender();
+    }));
     previewTab.addEventListener('click', () => setView('preview'));
     finishedTab.addEventListener('click', () => setView('finished'));
     generate.addEventListener('click', async () => {
