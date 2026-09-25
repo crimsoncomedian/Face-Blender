@@ -429,6 +429,20 @@
         }
       }
       const boundary = faceOvalMask(mid, .96, 15);
+      // Face Mesh stops at the hairline. When the chosen hair leaves more
+      // forehead visible than the face oval covers, supply skin from an
+      // unobstructed forehead below instead of exposing the white background.
+      const eyeY = (mid[33].y + mid[263].y)/2;
+      const eyeSpan = Math.hypot(mid[33].x-mid[263].x, mid[33].y-mid[263].y);
+      const capTop = mid[10].y - eyeSpan*.64;
+      const capBottom = eyeY-25;
+      const foreheadCap = softMask(g => {
+        g.beginPath();
+        g.ellipse((mid[33].x+mid[263].x)/2, (capTop+capBottom)/2,
+          eyeSpan*.98, Math.max(1,(capBottom-capTop)/2), 0, 0, Math.PI*2);
+        g.fill();
+      }, 10);
+      const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
       for (let i = 0; i < output.data.length; i += 4) {
         const a = (1-t) * (hairPixels[0] ? 1-hairPixels[0][i+3]/255 : 1);
         const b = t * (hairPixels[1] ? 1-hairPixels[1][i+3]/255 : 1);
@@ -438,6 +452,26 @@
           for (let channel = 0; channel < 3; channel++) {
             const blended = (sourcePixels[0][i+channel]*a + sourcePixels[1][i+channel]*b)/available;
             output.data[i+channel] = output.data[i+channel]*(1-face)+blended*face;
+          }
+        }
+        const cap = foreheadCap[i+3]/255 * (1-face);
+        if (cap > .005) {
+          const x = (i/4)%SIZE;
+          const firstY = Math.max(Math.floor(i/4/SIZE), Math.ceil(mid[10].y+10));
+          const lastY = Math.min(SIZE-1, Math.floor(eyeY-45));
+          let skin = -1, pixels = null;
+          for (const owner of [hairOwner, 1-hairOwner]) {
+            for (let y = firstY; y <= lastY; y += 3) {
+              const sample = (y*SIZE+x)*4;
+              const source = sourcePixels[owner], hairAlpha = hairPixels[owner]?.[sample+3] || 0;
+              if (hairAlpha < 75 && source[sample] + source[sample+1] + source[sample+2] < 710) {
+                skin = sample; pixels = source; break;
+              }
+            }
+            if (skin >= 0) break;
+          }
+          if (skin >= 0) for (let channel = 0; channel < 3; channel++) {
+            output.data[i+channel] = output.data[i+channel]*(1-cap)+pixels[skin+channel]*cap;
           }
         }
         output.data[i+3] = 255;
