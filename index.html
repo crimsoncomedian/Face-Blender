@@ -361,6 +361,48 @@
       g.drawImage(source, 0, 0);
       return fitted;
     }
+    function foreheadSkinColors(sources, hairMasks, shape, preferred) {
+      const center = (shape[33].x+shape[263].x)/2;
+      const eyeY = (shape[33].y+shape[263].y)/2;
+      const span = Math.hypot(shape[33].x-shape[263].x, shape[33].y-shape[263].y);
+      const owners = [preferred, 1-preferred];
+      const references = owners.map(owner => cheekColor(sources[owner], shape));
+      const raw = new Array(SIZE);
+      for (let x = Math.max(0,Math.floor(center-span)); x < Math.min(SIZE,Math.ceil(center+span)); x++) {
+        for (let choice = 0; choice < 2; choice++) {
+          const owner = owners[choice], channels = [[],[],[]], reference = references[choice];
+          for (let y = Math.max(0,Math.floor(eyeY-span*.59)); y <= Math.min(SIZE-1,Math.floor(eyeY-span*.32)); y += 5) {
+            for (let dx = -10; dx <= 10; dx += 5) {
+              const px = x+dx;
+              if (px < 0 || px >= SIZE) continue;
+              const i = (y*SIZE+px)*4;
+              if (hairMasks[owner]?.[i+3] > 60) continue;
+              const lab = toOklab(sources[owner][i],sources[owner][i+1],sources[owner][i+2]);
+              if (Math.abs(lab[0]-reference[0]) > .18 || Math.abs(lab[1]-reference[1]) > .045 || Math.abs(lab[2]-reference[2]) > .055) continue;
+              for (let channel = 0; channel < 3; channel++) channels[channel].push(lab[channel]);
+            }
+          }
+          if (channels[0].length < 6) continue;
+          raw[x] = fromOklab(...channels.map(values => {
+            values.sort((a,b) => a-b);
+            return values[Math.floor(values.length/2)];
+          }));
+          break;
+        }
+      }
+      const fallback = fromOklab(...references[0]);
+      return Array.from({length:SIZE}, (_,x) => {
+        let sums = [0,0,0], total = 0;
+        for (let dx = -18; dx <= 18; dx += 3) {
+          const value = raw[x+dx];
+          if (!value) continue;
+          const weight = 1-Math.abs(dx)/20;
+          for (let channel = 0; channel < 3; channel++) sums[channel] += value[channel]*weight;
+          total += weight;
+        }
+        return total ? sums.map(sum => sum/total) : fallback;
+      });
+    }
     function warpedMask(face, sourceMask, mid, offset = 0) {
       if (!face?.[sourceMask]) return null;
       const mask = document.createElement('canvas');
@@ -443,6 +485,7 @@
         g.fill();
       }, 10);
       const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
+      const foreheadColors = foreheadSkinColors(sourcePixels, hairPixels, mid, hairOwner);
       for (let i = 0; i < output.data.length; i += 4) {
         const a = (1-t) * (hairPixels[0] ? 1-hairPixels[0][i+3]/255 : 1);
         const b = t * (hairPixels[1] ? 1-hairPixels[1][i+3]/255 : 1);
@@ -454,25 +497,13 @@
             output.data[i+channel] = output.data[i+channel]*(1-face)+blended*face;
           }
         }
-        const cap = foreheadCap[i+3]/255 * (1-face);
+        const y = Math.floor(i/4/SIZE);
+        const eyebrowFade = Math.max(0, Math.min(1, (eyeY-43-y)/44));
+        const cap = foreheadCap[i+3]/255 * eyebrowFade * .96;
         if (cap > .005) {
           const x = (i/4)%SIZE;
-          const firstY = Math.max(Math.floor(i/4/SIZE), Math.ceil(mid[10].y+10));
-          const lastY = Math.min(SIZE-1, Math.floor(eyeY-45));
-          let skin = -1, pixels = null;
-          for (const owner of [hairOwner, 1-hairOwner]) {
-            for (let y = firstY; y <= lastY; y += 3) {
-              const sample = (y*SIZE+x)*4;
-              const source = sourcePixels[owner], hairAlpha = hairPixels[owner]?.[sample+3] || 0;
-              if (hairAlpha < 75 && source[sample] + source[sample+1] + source[sample+2] < 710) {
-                skin = sample; pixels = source; break;
-              }
-            }
-            if (skin >= 0) break;
-          }
-          if (skin >= 0) for (let channel = 0; channel < 3; channel++) {
-            output.data[i+channel] = output.data[i+channel]*(1-cap)+pixels[skin+channel]*cap;
-          }
+          for (let channel = 0; channel < 3; channel++) output.data[i+channel] =
+            output.data[i+channel]*(1-cap)+foreheadColors[x][channel]*cap;
         }
         output.data[i+3] = 255;
       }
