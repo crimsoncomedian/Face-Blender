@@ -29,6 +29,10 @@
     .drop input { position: absolute; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2; }
     .drop.has-image input { height: 40px; top: auto; bottom: 0; }
     .labels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; text-align: center; font-weight: 650; font-size: .84rem; margin: 10px 0 24px; }
+    .hair-reference { display: flex; align-items: center; gap: 14px; margin-top: 22px; }
+    .hair-reference .drop { width: 120px; flex: 0 0 120px; }
+    .hair-reference p { color: #52637c; font-size: .83rem; line-height: 1.45; margin: 5px 0 0; }
+    .hair-reference + .control-heading { margin-top: 26px; }
     .control-heading { display: flex; justify-content: space-between; font-weight: 700; font-size: .95rem; }
     .control-heading output { color: #315eb8; }
     input[type="range"] { width: 100%; margin: 17px 0 8px; accent-color: #315eb8; cursor: pointer; }
@@ -38,6 +42,7 @@
     .hair-choice .options { display: flex; flex-wrap: wrap; gap: 8px; }
     .hair-choice label { cursor: pointer; border: 1px solid #cad6e9; border-radius: 9px; padding: 9px 12px; color: #3b4d69; font-size: .85rem; }
     .hair-choice label:has(input:checked) { border-color: #315eb8; background: #eef4ff; color: #244d9d; font-weight: 700; }
+    .hair-choice label:has(input:disabled) { opacity: .55; cursor: not-allowed; }
     .hair-choice input { accent-color: #315eb8; margin-right: 5px; }
     .tips { background: #f3f7fe; border: 1px solid #dce8fa; border-radius: 12px; margin-top: 24px; padding: 15px; color: #4b5d79; font-size: .86rem; line-height: 1.5; }
     .tips strong { color: #233752; }
@@ -66,7 +71,7 @@
   </style>
 </head>
 <body>
-  <header><h1>Face Blend Studio</h1><p>Two photos. One blended face. Free and processed in your browser.</p></header>
+  <header><h1>Face Blend Studio</h1><p>Two faces, with optional hair reference. Free and processed in your browser.</p></header>
   <main>
     <p class="intro">Add a clear photo of each person. Use the slider for an instant blend, then refine and download the result you like.</p>
     <div class="grid">
@@ -77,13 +82,14 @@
           <label class="drop" id="dropB"><img alt="Preview of second photo"><span class="icon" aria-hidden="true">+</span><strong>Choose a photo</strong><small>or drop it here</small><input type="file" accept="image/*" aria-label="Second face photo"></label>
         </div>
         <div class="labels"><span>Face A</span><span>Face B</span></div>
+        <div class="hair-reference"><label class="drop" id="dropHair"><img alt="Preview of hair reference photo"><span class="icon" aria-hidden="true">+</span><strong>Add hair photo</strong><input type="file" accept="image/*" aria-label="Optional hair reference photo"></label><div><strong>Hair reference (optional)</strong><p>Use a photo with a visible face and the hairstyle you want. A similar head angle works best.</p></div></div>
         <div class="control-heading"><label for="blend">2. Choose the mix</label><output id="percent" for="blend">50% / 50%</output></div>
         <input id="blend" type="range" min="0" max="100" value="50" aria-label="Amount of Face B">
         <div class="ends"><span>Face A</span><span>Face B</span></div>
         <fieldset class="hair-choice"><legend>Choose the hair separately</legend><div class="options">
-          <label><input type="radio" name="hair" value="mix" checked>Blend hair</label>
-          <label><input type="radio" name="hair" value="a">Face A hair</label>
-          <label><input type="radio" name="hair" value="b">Face B hair</label>
+          <label><input type="radio" name="hair" value="a" checked>Face A</label>
+          <label><input type="radio" name="hair" value="b">Face B</label>
+          <label><input type="radio" name="hair" value="reference" disabled>Hair reference</label>
         </div></fieldset>
         <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
         <div class="finish-panel">
@@ -122,7 +128,7 @@
     layers.forEach(c => { c.width = c.height = SIZE; });
     const faces = [null, null];
     const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-    let detectorPromise, triangleIndices, scheduled = false, generation = [0, 0];
+    let detectorPromise, triangleIndices, scheduled = false, generation = [0, 0, 0];
     let finished = false, finishing = false;
 
     function setView(view) {
@@ -258,16 +264,24 @@
       ctx.drawImage(layers[1], 0, 0);
       ctx.globalAlpha = 1;
       const hair = document.querySelector('input[name="hair"]:checked').value;
-      if (hair !== 'mix') {
-        const preview = ctx.getImageData(0, 0, SIZE, SIZE);
-        const background = layers[hair === 'a' ? 0 : 1].getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-        const boundary = faceOvalMask(mid, .96, 15);
-        for (let i = 0; i < preview.data.length; i += 4) {
-          const face = boundary[i+3] / 255;
-          for (let j = 0; j < 3; j++) preview.data[i+j] = background[i+j]*(1-face) + preview.data[i+j]*face;
+      let hairLayer = layers[hair === 'b' ? 1 : 0];
+      if (hair === 'reference' && faces[2]) {
+        hairLayer = document.createElement('canvas');
+        hairLayer.width = hairLayer.height = SIZE;
+        const hairContext = hairLayer.getContext('2d');
+        for (let i = 0; i < triangleIndices.length; i += 3) {
+          const ids = [triangleIndices[i], triangleIndices[i+1], triangleIndices[i+2]];
+          drawTriangle(hairContext, faces[2].aligned, ids.map(j => faces[2].pts[j]), ids.map(j => mid[j]));
         }
-        ctx.putImageData(preview, 0, 0);
       }
+      const preview = ctx.getImageData(0, 0, SIZE, SIZE);
+      const background = hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+      const boundary = faceOvalMask(mid, .96, 15);
+      for (let i = 0; i < preview.data.length; i += 4) {
+        const face = boundary[i+3] / 255;
+        for (let j = 0; j < 3; j++) preview.data[i+j] = background[i+j]*(1-face) + preview.data[i+j]*face;
+      }
+      ctx.putImageData(preview, 0, 0);
       frame.classList.add('ready');
       download.disabled = false;
       generate.disabled = finishing;
@@ -388,25 +402,32 @@
       if (!file.type.startsWith('image/')) { setStatus('Please choose an image file.', true); return; }
       const ticket = ++generation[index];
       invalidateFinished();
-      faces[index] = null;
-      generate.disabled = true;
-      download.disabled = true;
-      frame.classList.remove('ready');
-      ctx.clearRect(0, 0, SIZE, SIZE);
-      drop.classList.remove('has-image');
-      drop.querySelector('img').removeAttribute('src');
-      setStatus('Finding facial landmarks…');
+      if (index !== 2) {
+        faces[index] = null;
+        generate.disabled = true;
+        download.disabled = true;
+        frame.classList.remove('ready');
+        ctx.clearRect(0, 0, SIZE, SIZE);
+        drop.classList.remove('has-image');
+        drop.querySelector('img').removeAttribute('src');
+      }
+      setStatus(index === 2 ? 'Aligning hair reference…' : 'Finding facial landmarks…');
       try {
         const [image, detector] = await Promise.all([loadImage(file), getDetector()]);
         if (ticket !== generation[index]) return;
         const photo = resized(image);
         const found = detector.detect(photo).faceLandmarks;
-        if (!found?.length) throw new Error(`No face found in Face ${index ? 'B' : 'A'}. Try a clear, front-facing photo.`);
+        if (!found?.length) throw new Error(index === 2 ? 'No face found in the hair reference. Use a photo showing the face beneath the hairstyle.' : `No face found in Face ${index ? 'B' : 'A'}. Try a clear, front-facing photo.`);
         const prepared = prepareFace(photo, found[0]);
         if (ticket !== generation[index]) return;
         faces[index] = prepared;
         drop.querySelector('img').src = photo.toDataURL('image/jpeg', .8);
         drop.classList.add('has-image');
+        if (index === 2) {
+          const option = document.querySelector('input[name="hair"][value="reference"]');
+          option.disabled = false;
+          option.checked = true;
+        }
         if (faces[0] && faces[1]) scheduleRender();
         else setStatus('Add the second photo.');
       } catch (err) {
@@ -414,7 +435,7 @@
         console.error(err);
       }
     }
-    for (const [i, drop] of [document.querySelector('#dropA'), document.querySelector('#dropB')].entries()) {
+    for (const [i, drop] of [document.querySelector('#dropA'), document.querySelector('#dropB'), document.querySelector('#dropHair')].entries()) {
       drop.querySelector('input').addEventListener('change', e => accept(e.target.files[0], i, drop));
       drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
