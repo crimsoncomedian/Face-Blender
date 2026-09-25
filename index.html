@@ -68,7 +68,7 @@
 <body>
   <header><h1>Face Blend Studio</h1><p>Two photos. One blended face. Free and processed in your browser.</p></header>
   <main>
-    <p class="intro">Add a clear photo of each person. Use the slider for an instant preview, then make one finished face when you like the mix.</p>
+    <p class="intro">Add a clear photo of each person. Use the slider for an instant blend, then refine and download the result you like.</p>
     <div class="grid">
       <section class="card" aria-label="Photos and settings">
         <h2>1. Add two faces</h2>
@@ -87,15 +87,15 @@
         </div></fieldset>
         <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
         <div class="finish-panel">
-          <strong>3. Make one face</strong>
-          <p>Combines one set of sharp facial details with complexion sampled from both faces. Hair follows your separate choice. Everything runs in your browser.</p>
-          <button id="generate" disabled>Make one face</button>
+          <strong>3. Refine the blend</strong>
+          <p>Gently balances the complexion of the live preview while keeping its facial features and your hair choice. Everything runs in your browser.</p>
+          <button id="generate" disabled>Refine preview</button>
         </div>
       </section>
       <section class="card" aria-label="Blended result">
         <h2>Your blend</h2>
-        <div class="mode-tabs" role="tablist" aria-label="Result view"><button id="previewTab" role="tab" aria-selected="true" aria-controls="frame">Live preview</button><button id="finishedTab" role="tab" aria-selected="false" aria-controls="frame" disabled>One face</button></div>
-        <div class="result-frame" id="frame"><canvas id="result" width="640" height="640" aria-label="Blended face preview" role="img"></canvas><canvas id="finished" width="640" height="640" aria-label="Finished single face portrait" role="img"></canvas><div class="placeholder"><b aria-hidden="true">◌</b>Your blended face will appear here after you add both photos.</div></div>
+        <div class="mode-tabs" role="tablist" aria-label="Result view"><button id="previewTab" role="tab" aria-selected="true" aria-controls="frame">Live preview</button><button id="finishedTab" role="tab" aria-selected="false" aria-controls="frame" disabled>Refined</button></div>
+        <div class="result-frame" id="frame"><canvas id="result" width="640" height="640" aria-label="Blended face preview" role="img"></canvas><canvas id="finished" width="640" height="640" aria-label="Refined face composite" role="img"></canvas><div class="placeholder"><b aria-hidden="true">◌</b>Your blended face will appear here after you add both photos.</div></div>
         <div class="actions"><button id="download" disabled>Download preview</button><p id="status" class="status" role="status" aria-live="polite">Waiting for two photos.</p></div>
       </section>
     </div>
@@ -130,7 +130,7 @@
       frame.classList.toggle('show-finished', finish);
       previewTab.setAttribute('aria-selected', String(!finish));
       finishedTab.setAttribute('aria-selected', String(finish));
-      download.textContent = finish ? 'Download finished face' : 'Download preview';
+      download.textContent = finish ? 'Download refined blend' : 'Download preview';
     }
     function invalidateFinished() {
       finished = false;
@@ -352,60 +352,36 @@
         g.beginPath(); g.ellipse(mouthX,mouthY,mouthRx*1.08,mouthRy*1.08,0,0,Math.PI*2); g.fill();
       }, 8);
     }
-    function makeSingleFace() {
-      // Keep one sharp face, recolor its skin in perceptual space, and use
-      // an independent hair layer. The second mouth contributes detail.
+    function refinePreview() {
+      // Keep the landmark-aligned preview intact. Only correct its broad skin
+      // color toward the sampled midpoint; never paste a donor's eyes or mouth.
       const t = Number(slider.value) / 100;
-      const donor = t <= .5 ? 0 : 1;
-      const other = 1 - donor;
-      const contribution = Math.min(t, 1 - t);
       const shape = faces[0].pts.map((p, i) => ({
         x: p.x * (1 - t) + faces[1].pts[i].x * t,
         y: p.y * (1 - t) + faces[1].pts[i].y * t
       }));
-      const faceMask = faceOvalMask(shape, .96, 15);
       const mouthCenter = {x:(shape[61].x + shape[291].x)/2, y:(shape[0].y + shape[17].y)/2};
       const mouthRx = Math.max(17, Math.hypot(shape[61].x-shape[291].x, shape[61].y-shape[291].y)*.68);
       const mouthRy = Math.max(16, Math.hypot(shape[0].x-shape[17].x, shape[0].y-shape[17].y)*1.16);
-      const mouthMask = softMask(g => {
-        g.beginPath(); g.ellipse(mouthCenter.x, mouthCenter.y, mouthRx, mouthRy, 0, 0, Math.PI*2); g.fill();
-      }, 7);
       const skinMask = skinMaskFor(shape, mouthCenter.x, mouthCenter.y, mouthRx, mouthRy);
-      const images = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
-      const sampled = images.map(pixels => cheekColor(pixels, shape));
+      const preview = ctx.getImageData(0, 0, SIZE, SIZE);
+      const sampled = layers.map(layer => cheekColor(layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data, shape));
       const target = sampled[0].map((value, i) => value*(1-t) + sampled[1][i]*t);
-      const donorShift = target.map((value, i) => value-sampled[donor][i]);
-      const otherShift = target.map((value, i) => value-sampled[other][i]);
-      const hair = document.querySelector('input[name="hair"]:checked').value;
-      const background = hair === 'mix' ? ctx.getImageData(0, 0, SIZE, SIZE).data : images[hair === 'a' ? 0 : 1];
-      const output = finishedContext.createImageData(SIZE, SIZE);
-      output.data.set(background);
-      const pixels = output.data;
-      const featureStrength = Math.min(1, contribution * 2.35);
+      const current = cheekColor(preview.data, shape);
+      const shift = target.map((v,i) => Math.max(i ? -.025 : -.045, Math.min(i ? .025 : .045, v-current[i])));
+      const pixels = preview.data;
       for (let i = 0; i < pixels.length; i += 4) {
-        const face = faceMask[i+3] / 255;
-        if (face < .002) continue;
-        const mouth = mouthMask[i+3] / 255 * featureStrength;
         const skin = skinMask[i+3] / 255;
-        const donorLab = toOklab(images[donor][i],images[donor][i+1],images[donor][i+2]);
-        const corrected = fromOklab(donorLab[0]+donorShift[0]*skin, donorLab[1]+donorShift[1]*skin, donorLab[2]+donorShift[2]*skin);
-        let feature = null;
-        if (mouth > .002) {
-          const otherLab = toOklab(images[other][i],images[other][i+1],images[other][i+2]);
-          feature = fromOklab(otherLab[0]+otherShift[0],otherLab[1]+otherShift[1],otherLab[2]+otherShift[2]);
-        }
-        for (let channel = 0; channel < 3; channel++) {
-          const j = i + channel;
-          const facialDetail = feature ? corrected[channel]*(1-mouth) + feature[channel]*mouth : corrected[channel];
-          pixels[j] = background[j]*(1-face) + facialDetail*face;
-        }
-        pixels[i+3] = 255;
+        if (skin < .005) continue;
+        const lab = toOklab(pixels[i],pixels[i+1],pixels[i+2]);
+        const rgb = fromOklab(lab[0]+shift[0]*skin,lab[1]+shift[1]*skin,lab[2]+shift[2]*skin);
+        pixels[i]=rgb[0]; pixels[i+1]=rgb[1]; pixels[i+2]=rgb[2];
       }
-      finishedContext.putImageData(output, 0, 0);
+      finishedContext.putImageData(preview, 0, 0);
       finished = true;
       finishedTab.disabled = false;
       setView('finished');
-      setStatus('One face ready to download.');
+      setStatus('Refined blend ready to download.');
     }
     async function accept(file, index, drop) {
       if (!file) return;
@@ -459,25 +435,25 @@
       if (!faces[0] || !faces[1] || finishing) return;
       finishing = true;
       generate.disabled = true;
-      generate.textContent = 'Making face…';
-      setStatus('Combining the facial details…');
+      generate.textContent = 'Refining…';
+      setStatus('Balancing the complexion…');
       try {
         await new Promise(resolve => requestAnimationFrame(resolve));
         if (scheduled) render();
-        makeSingleFace();
+        refinePreview();
       } catch (error) {
         console.error(error);
-        setStatus('Could not combine these photos. Try another pair.', true);
+        setStatus('Could not refine these photos. Try another pair.', true);
       } finally {
         finishing = false;
         generate.disabled = !(faces[0] && faces[1]);
-        generate.textContent = 'Make one face';
+        generate.textContent = 'Refine preview';
       }
     });
     download.addEventListener('click', () => {
       const link = document.createElement('a');
       const finish = frame.classList.contains('show-finished') && finished;
-      link.download = `face-blend-${slider.value}${finish ? '-finished' : '-preview'}.png`;
+      link.download = `face-blend-${slider.value}${finish ? '-refined' : '-preview'}.png`;
       link.href = finish ? finishedCanvas.toDataURL('image/png') : result.toDataURL('image/png');
       link.click();
     });
