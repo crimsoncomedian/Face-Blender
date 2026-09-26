@@ -602,31 +602,57 @@
         skin[p] = Math.max(skin[p], weight[p]);
       }
     }
-    // Pull-push fill: shrink the known pixels (alpha = confidence) down to a
-    // tiny image, then layer each coarser level underneath the finer one so
-    // every gap takes the average colour of the skin around it.
+    // Pull-push fill: average the known pixels (weighted by confidence) down a
+    // pyramid of half-size images, then on the way back up fill each level's
+    // gaps from the smoother level below, so every gap takes the gently
+    // varying colour of the skin around it. The maths stays in floating
+    // point: canvas stores faint pixels with too little colour precision,
+    // which showed up as horizontal stripes across large filled areas.
     function pushPullFill(pixels, known) {
-      const image = new ImageData(SIZE, SIZE);
-      for (let p = 0; p < SIZE*SIZE; p++) {
-        const i = p*4;
-        image.data[i] = pixels[i]; image.data[i+1] = pixels[i+1]; image.data[i+2] = pixels[i+2];
-        image.data[i+3] = 255*known[p];
+      const color = new Float32Array(SIZE*SIZE*3), weight = Float32Array.from(known);
+      for (let p = 0; p < SIZE*SIZE; p++)
+        for (let channel = 0; channel < 3; channel++) color[p*3+channel] = pixels[p*4+channel];
+      const levels = [{ width: SIZE, height: SIZE, color, weight }];
+      while (levels.at(-1).width > 1 || levels.at(-1).height > 1) {
+        const fine = levels.at(-1), width = Math.ceil(fine.width/2), height = Math.ceil(fine.height/2);
+        const coarse = { width, height, color: new Float32Array(width*height*3), weight: new Float32Array(width*height) };
+        for (let y = 0; y < fine.height; y++) for (let x = 0; x < fine.width; x++) {
+          const p = y*fine.width + x, w = fine.weight[p];
+          if (!w) continue;
+          const q = (y>>1)*width + (x>>1);
+          coarse.weight[q] += w;
+          for (let channel = 0; channel < 3; channel++) coarse.color[q*3+channel] += fine.color[p*3+channel]*w;
+        }
+        for (let q = 0; q < width*height; q++) {
+          const w = coarse.weight[q];
+          if (!w) continue;
+          for (let channel = 0; channel < 3; channel++) coarse.color[q*3+channel] /= w;
+          coarse.weight[q] = Math.min(1, w);
+        }
+        levels.push(coarse);
       }
-      const levels = [document.createElement('canvas')];
-      levels[0].width = levels[0].height = SIZE;
-      levels[0].getContext('2d').putImageData(image, 0, 0);
-      for (let size = SIZE/2; size >= 5; size /= 2) {
-        const level = document.createElement('canvas');
-        level.width = level.height = size;
-        level.getContext('2d').drawImage(levels.at(-1), 0, 0, size, size);
-        levels.push(level);
-      }
+      if (!levels.at(-1).weight[0]) return pixels;
       for (let n = levels.length-2; n >= 0; n--) {
-        const g = levels[n].getContext('2d');
-        g.globalCompositeOperation = 'destination-over';
-        g.drawImage(levels[n+1], 0, 0, levels[n].width, levels[n].height);
+        const fine = levels[n], coarse = levels[n+1], below = coarse.color, cw = coarse.width;
+        for (let y = 0; y < fine.height; y++) {
+          const cy = Math.max(0, Math.min(coarse.height-1, (y+.5)/2-.5)), y0 = Math.floor(cy), y1 = Math.min(y0+1, coarse.height-1), ty = cy-y0;
+          for (let x = 0; x < fine.width; x++) {
+            const p = y*fine.width + x, keep = Math.min(1, fine.weight[p]);
+            if (keep >= 1) continue;
+            const cx = Math.max(0, Math.min(cw-1, (x+.5)/2-.5)), x0 = Math.floor(cx), x1 = Math.min(x0+1, cw-1), tx = cx-x0;
+            const i00 = (y0*cw + x0)*3, i10 = (y0*cw + x1)*3, i01 = (y1*cw + x0)*3, i11 = (y1*cw + x1)*3;
+            const take = 1-keep, w00 = (1-tx)*(1-ty)*take, w10 = tx*(1-ty)*take, w01 = (1-tx)*ty*take, w11 = tx*ty*take, o = p*3;
+            for (let channel = 0; channel < 3; channel++)
+              fine.color[o+channel] = fine.color[o+channel]*keep + below[i00+channel]*w00 + below[i10+channel]*w10 + below[i01+channel]*w01 + below[i11+channel]*w11;
+          }
+        }
       }
-      return levels[0].getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+      const filled = new Uint8ClampedArray(SIZE*SIZE*4);
+      for (let p = 0; p < SIZE*SIZE; p++) {
+        for (let channel = 0; channel < 3; channel++) filled[p*4+channel] = color[p*3+channel];
+        filled[p*4+3] = 255;
+      }
+      return filled;
     }
     // Where only one person's skin is available (the other's hair covered it),
     // the result is one person's forehead beside a mixed face. Nudge those areas
