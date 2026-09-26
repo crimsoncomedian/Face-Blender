@@ -578,6 +578,15 @@
       const selectedMask = !hairFace?.hairUnion ? null
         : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid);
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
+      // The neck and shoulders come from one photo (by slider side, or by hair
+      // choice on the photo background), so their skin tone jumped at the
+      // switch. Tint that person's body skin toward a slider-weighted mix of
+      // both people's neck tones: the tone now moves smoothly with the slider
+      // and meets in the middle at the switch, while the shape stays one
+      // person's.
+      const neckOwner = bodyMask ? bodyOwner : hair === 'b' ? 1 : hair === 'a' ? 0 : -1;
+      const neckTint = neckOwner >= 0 ? neckTintFor(neckOwner, t, mid, sourcePixels, skinAlpha) : null;
+      if (neckTint && !bodyMask) applyTint(output.data, neckTint);
       // Soft hair edges carry the old background's colour (a red flag becomes a
       // red fringe). On a clean background, edge pixels take the colour of
       // nearby solid hair instead. Over the face the original edge pixels are
@@ -596,7 +605,7 @@
       }
       if (bodyMask) {
         const mask = bodyMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-        const body = sourcePixels[bodyOwner];
+        const body = neckTint ? applyTint(new Uint8ClampedArray(sourcePixels[bodyOwner]), neckTint) : sourcePixels[bodyOwner];
         // A widened copy of the chosen hair sits under the face, so the soft
         // seam between skin and hair shows that hair's photo instead of white.
         const backing = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 5);
@@ -910,6 +919,46 @@
           output.data[i+channel] += (blendedTone[i+channel]-singleTone[i+channel])*amount;
       }
     }
+    function meanColour(pixels, alpha, include) {
+      const sum = [0, 0, 0];
+      let count = 0;
+      for (let p = 0; p < SIZE*SIZE; p++) {
+        if (!include(p) || alpha(p) < .8) continue;
+        for (let channel = 0; channel < 3; channel++) sum[channel] += pixels[p*4+channel];
+        count++;
+      }
+      return count > 300 ? sum.map(v => v/count) : null;
+    }
+    // Returns the per-channel colour ratio and the soft neck mask for the
+    // person whose body is shown, or null when there is nothing to go on.
+    function neckTintFor(owner, t, mid, sourcePixels, skinAlpha) {
+      const necks = faces.slice(0, 2).map(face => face?.neckMask ? warpedMask(face, 'neckMask', mid) : null);
+      if (!necks[owner]) return null;
+      const neckAlpha = necks.map(mask => mask && mask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      const below = mid[1].y;
+      const neckTones = [0, 1].map(k => neckAlpha[k] && meanColour(sourcePixels[k], p => neckAlpha[k][p*4+3]/255, () => true));
+      const faceTones = [0, 1].map(k => skinAlpha[k] && meanColour(sourcePixels[k], p => skinAlpha[k][p], p => p/SIZE > below));
+      // A neck hidden by hair: estimate it from that person's lower face, using
+      // the other person's neck-to-face relation.
+      for (const k of [0, 1]) {
+        if (neckTones[k] || !faceTones[k] || !neckTones[1-k] || !faceTones[1-k]) continue;
+        neckTones[k] = faceTones[k].map((v, c) => v * neckTones[1-k][c] / Math.max(1, faceTones[1-k][c]));
+      }
+      if (!neckTones[0] || !neckTones[1]) return null;
+      const ratio = [0, 1, 2].map(c => {
+        const target = neckTones[0][c]*(1-t) + neckTones[1][c]*t;
+        return Math.max(.7, Math.min(1.4, target / Math.max(1, neckTones[owner][c])));
+      });
+      return { ratio, mask: softMask(g => g.drawImage(necks[owner], 0, 0), 4) };
+    }
+    function applyTint(pixels, tint) {
+      for (let p = 0; p < SIZE*SIZE; p++) {
+        const amount = tint.mask[p*4+3]/255;
+        if (amount < .01) continue;
+        for (let channel = 0; channel < 3; channel++) pixels[p*4+channel] *= 1 + (tint.ratio[channel]-1)*amount;
+      }
+      return pixels;
+    }
     function scheduleRender() {
       if (scheduled) return;
       scheduled = true;
@@ -1175,8 +1224,8 @@
         getPersonSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
           // Multiclass labels: 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 accessories.
-          [prepared.bodyMask, prepared.skinMask, prepared.coarseHairMask, prepared.accessoryMask] = makeCategoryMasks(segmenter, prepared.aligned,
-            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: true }), label => label === 3, label => label === 1, label => label === 5);
+          [prepared.bodyMask, prepared.skinMask, prepared.coarseHairMask, prepared.accessoryMask, prepared.neckMask] = makeCategoryMasks(segmenter, prepared.aligned,
+            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: true }), label => label === 3, label => label === 1, label => label === 5, label => label === 2);
           mergeHair(prepared);
           refreshAfterMask();
         }).catch(error => {
