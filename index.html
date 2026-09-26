@@ -176,7 +176,7 @@
       if (!hairSegmenterPromise) hairSegmenterPromise = (async () => {
         const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');
         return ImageSegmenter.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/hair_segmenter/float32/latest/hair_segmenter.tflite', delegate: 'CPU' },
+          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/hair_segmenter/float32/1/hair_segmenter.tflite', delegate: 'CPU' },
           runningMode: 'IMAGE', outputCategoryMask: true, outputConfidenceMasks: false
         });
       })().catch(error => { hairSegmenterPromise = null; throw error; });
@@ -186,7 +186,7 @@
       if (!personSegmenterPromise) personSegmenterPromise = (async () => {
         const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm');
         return ImageSegmenter.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite', delegate: 'CPU' },
+          baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite', delegate: 'CPU' },
           runningMode: 'IMAGE', outputCategoryMask: true, outputConfidenceMasks: false
         });
       })().catch(error => { personSegmenterPromise = null; throw error; });
