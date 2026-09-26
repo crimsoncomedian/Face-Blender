@@ -465,20 +465,27 @@
             (Math.max(...xs)-Math.min(...xs))/2 + margin, (Math.max(...ys)-Math.min(...ys))/2 + margin, 0, 0, Math.PI*2);
           g.fill();
         };
+        const features = [...browIds,
+          [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+          [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
+          [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]];
         const region = softMask(g => {
           traceFaceArea(g, mid);
           g.globalCompositeOperation = 'destination-out';
-          const features = [...browIds,
-            [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
-            [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
-            [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]];
           for (const ids of features) featureEllipse(g, ids, 10);
         }, 10);
         // Bangs that reach the eyebrows end in thin strands the hair models
         // miss. Hair hangs down, so the forehead and brows just below someone's
         // detected bangs are treated as covered, and (unless that person's
         // hair was chosen) rebuilt from the other person, colour-matched.
-        const browZone = softMask(g => { for (const ids of browIds) featureEllipse(g, ids, 12); }, 4);
+        // The whole face area counts, brows included; only eyes and mouth are
+        // left out. (Using the fill region, which also cuts out the brows, left
+        // a soft edge just above each brow where strands survived as arches.)
+        const coverZone = softMask(g => {
+          traceFaceArea(g, mid);
+          g.globalCompositeOperation = 'destination-out';
+          for (const ids of features.slice(2)) featureEllipse(g, ids, 6);
+        }, 4);
         const hairOwnerIndex = hair === 'a' ? 0 : hair === 'b' ? 1 : -1;
         // Where the other person shows skin and this person doesn't is this
         // person's bangs, whether or not the hair model caught every strand.
@@ -493,14 +500,19 @@
           canvas.getContext('2d').putImageData(image, 0, 0);
           return canvas;
         });
+        // Spread a little sideways too, so narrow gaps between strands of a
+        // fringe count as covered along with the strands around them.
         const covered = faceMasks.map((mask, k) => mask && softMask(g => {
-          for (let drop = 0; drop <= 40; drop += 4) { g.drawImage(mask, 0, drop); g.drawImage(bangs[k], 0, drop); }
+          for (let drop = 0; drop <= 40; drop += 4)
+            for (let shift = -12; shift <= 12; shift += 6) { g.drawImage(mask, shift, drop); g.drawImage(bangs[k], shift, drop); }
         }, 3));
         const forced = [0, 1].map(k => Float32Array.from({length: SIZE*SIZE}, (_, p) => {
           if (k === hairOwnerIndex || !covered[k]) return 0;
-          const mine = covered[k][p*4+3]/255, theirs = covered[1-k] ? covered[1-k][p*4+3]/255 : 0;
-          const face = Math.max(browZone[p*4+3], region[p*4+3])/255;
-          return face * mine * (1 - theirs);
+          // If both people have hair here there is nothing clean to borrow,
+          // unless the other person's hair is the chosen one: their pixels
+          // then match the hair drawn on top.
+          const mine = covered[k][p*4+3]/255, theirs = covered[1-k] && 1-k !== hairOwnerIndex ? covered[1-k][p*4+3]/255 : 0;
+          return coverZone[p*4+3]/255 * mine * (1 - theirs);
         }));
         // A brow hidden under bangs is best rebuilt from the same person's other
         // brow, mirrored across the face, when that one is clear: it keeps
@@ -543,6 +555,25 @@
       const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
       const studioBackground = document.querySelector('input[name="background"]:checked').value === 'studio';
       const bodyMask = studioBackground ? warpedMask(faces[bodyOwner], 'bodyMask', mid) : null;
+      // Unusual hair (bright dye, for example) can be tagged as clothing; hair
+      // never belongs to the body layer, so take it back out.
+      // Likewise nothing beside the head above eye level is body (clothes
+      // never sit there), so only the face itself is kept up there.
+      if (bodyMask) {
+        const g = bodyMask.getContext('2d');
+        g.globalCompositeOperation = 'destination-out';
+        if (faceMasks[bodyOwner]) g.drawImage(faceMasks[bodyOwner], 0, 0);
+        const eyeLine = Math.max(mid[159].y, mid[386].y);
+        g.save();
+        g.beginPath();
+        g.rect(0, 0, SIZE, eyeLine);
+        g.clip();
+        traceFaceOval(g, mid, 1.04);
+        g.rect(0, 0, SIZE, eyeLine);
+        g.fill('evenodd');
+        g.restore();
+        g.globalCompositeOperation = 'source-over';
+      }
       const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
       const selectedMask = !hairFace?.hairUnion ? null
         : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid);
@@ -671,7 +702,37 @@
       const difference = new Uint8ClampedArray(SIZE*SIZE*4);
       for (let i = 0; i < difference.length; i += 4)
         for (let channel = 0; channel < 3; channel++) difference[i+channel] = 128 + pixels[i+channel] - other[i+channel];
-      const offset = pushPullFill(difference, trust.map((w, p) => w * otherSkin[p]));
+      const known = trust.map((w, p) => w * otherSkin[p]);
+      const offset = pushPullFill(difference, known);
+      // The nearest trusted skin is often the strip just below the hair, which
+      // sits in the hair's shadow; spreading its colour difference across the
+      // whole rebuilt forehead darkened it. Right next to trusted skin the local
+      // difference is kept so the seam matches; further in, it eases to the
+      // face-wide average.
+      const average = [0, 0, 0];
+      let weightSum = 0;
+      for (let p = 0; p < known.length; p++) {
+        if (known[p] < .5) continue;
+        for (let channel = 0; channel < 3; channel++) average[channel] += difference[p*4+channel]*known[p];
+        weightSum += known[p];
+      }
+      if (weightSum > 0) {
+        const nearby = softMask(g => {
+          const image = new ImageData(SIZE, SIZE);
+          for (let p = 0; p < known.length; p++) { image.data.fill(255, p*4, p*4+3); image.data[p*4+3] = 255*known[p]; }
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = SIZE;
+          canvas.getContext('2d').putImageData(image, 0, 0);
+          g.drawImage(canvas, 0, 0);
+        }, 18);
+        for (let p = 0; p < known.length; p++) {
+          const local = Math.min(1, nearby[p*4+3]/255*2);
+          for (let channel = 0; channel < 3; channel++) {
+            const mean = average[channel]/weightSum;
+            offset[p*4+channel] = mean + (offset[p*4+channel] - mean)*local;
+          }
+        }
+      }
       // Right under their own hair the other person's skin is shadowed; copying
       // that strip made a grey band. Where their skin is less than clearly
       // visible, use their clear skin extended smoothly instead.
@@ -680,7 +741,7 @@
       for (let p = 0; p < hole.length; p++) {
         if (hole[p] < .01) continue;
         const amount = (1-trust[p]) * Math.min(1, hole[p]/Math.max(.001, 1-ownWeight[p]*(1-forced[p])));
-        const i = p*4, shade = Math.min(1, (other[i] + other[i+1] + other[i+2])/480 + (1-otherWeight[p]));
+        const i = p*4, shade = Math.min(1, Math.max(0, (other[i] + other[i+1] + other[i+2] - 120)/200) + (1-otherWeight[p]));
         for (let channel = 0; channel < 3; channel++) {
           // The offset is a skin-colour difference; dark pixels such as brow
           // hair take only part of it so they don't pick up a tint.
