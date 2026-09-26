@@ -199,7 +199,7 @@
       try {
         const labels = mask.getAsUint8Array();
         return includesCategory.map(includes => {
-          const keep = includes.mainRegionsOnly ? mainRegions(labels, mask.width, mask.height, includes) : null;
+          const keep = includes.mainRegionsOnly ? mainRegions(labels, mask.width, mask.height, includes, includes.mainRegionsOnly) : null;
           const canvas = document.createElement('canvas');
           canvas.width = mask.width; canvas.height = mask.height;
           const g = canvas.getContext('2d');
@@ -211,9 +211,17 @@
           }
           g.putImageData(data, 0, 0);
           if (canvas.width === SIZE && canvas.height === SIZE) return canvas;
+          // Upscaling a coarse (256px) label map leaves stair-stepped, notched
+          // outlines that show up as jagged edges. Blur, then re-sharpen the
+          // alpha so the outline becomes a smooth curve.
           const scaled = document.createElement('canvas');
           scaled.width = scaled.height = SIZE;
-          scaled.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
+          const g2 = scaled.getContext('2d', { willReadFrequently: true });
+          g2.filter = `blur(${Math.round(1.6*SIZE/canvas.width)}px)`;
+          g2.drawImage(canvas, 0, 0, SIZE, SIZE);
+          const smooth = g2.getImageData(0, 0, SIZE, SIZE);
+          for (let i = 3; i < smooth.data.length; i += 4) smooth.data[i] = Math.max(0, Math.min(255, (smooth.data[i]-128)*3 + 128));
+          g2.putImageData(smooth, 0, 0);
           return scaled;
         });
       } finally { mask.close(); }
@@ -221,7 +229,7 @@
     // Segmenters sometimes tag stray background patches (a flag, a chair) as
     // person. Keep connected regions that are at least a quarter the size of
     // the largest one and drop the small islands.
-    function mainRegions(labels, width, height, includes) {
+    function mainRegions(labels, width, height, includes, share = .25) {
       const region = new Int32Array(labels.length).fill(-1), sizes = [];
       for (let start = 0; start < labels.length; start++) {
         if (region[start] !== -1 || !includes(labels[start])) continue;
@@ -239,7 +247,7 @@
         }
         sizes.push(size);
       }
-      const minimum = Math.max(0, ...sizes) / 4;
+      const minimum = Math.max(0, ...sizes) * share;
       return Uint8Array.from(region, id => id >= 0 && sizes[id] >= minimum ? 1 : 0);
     }
     function loadImage(file) {
@@ -1060,7 +1068,7 @@
       if (!channels[0].length) return toOklab(170, 130, 115);
       return channels.map(a => { a.sort((x,y) => x-y); return a[Math.floor(a.length*.5)]; });
     }
-    function skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skin = null) {
+    function skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skin = null, blur = 8) {
       return softMask(g => {
         if (skin) g.drawImage(skin, 0, 0);
         else { traceFaceOval(g, shape, .98); g.fill(); }
@@ -1072,7 +1080,7 @@
           g.beginPath(); g.ellipse(x, y, Math.max(17,radius),Math.max(13,radius*.55),0,0,Math.PI*2); g.fill();
         }
         g.beginPath(); g.ellipse(mouthX,mouthY,mouthRx*1.08,mouthRy*1.08,0,0,Math.PI*2); g.fill();
-      }, 8);
+      }, blur);
     }
     function balanceLayerComplexions(shape, t, skinMasks = []) {
       const images = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE));
@@ -1084,7 +1092,9 @@
       const mouthRx = Math.max(17, Math.hypot(shape[61].x-shape[291].x, shape[61].y-shape[291].y)*.68);
       const mouthRy = Math.max(16, Math.hypot(shape[0].x-shape[17].x, shape[0].y-shape[17].y)*1.16);
       images.forEach((image, index) => {
-        const mask = skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skinMasks[index]);
+        // The segmenter's skin outline is blocky and cut where hair crosses the
+        // face; a wide feather keeps the colour shift from showing that shape.
+        const mask = skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skinMasks[index], skinMasks[index] ? 22 : 8);
         const sourceRgb = fromOklab(...cheeks[index]);
         const shift = targetRgb.map((value, channel) => Math.max(-30, Math.min(30, value-sourceRgb[channel])));
         const pixels = image.data;
@@ -1212,7 +1222,10 @@
         else setStatus('Add the second photo.');
         getHairSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
-          [prepared.hairMask] = makeCategoryMasks(segmenter, prepared.aligned, label => label === 1);
+          // Small detached islands of "hair" (stray bits beside the head) are
+          // dropped; pieces at least a tenth the size of the largest stay, so
+          // both sides of a long hairstyle survive.
+          [prepared.hairMask] = makeCategoryMasks(segmenter, prepared.aligned, Object.assign(label => label === 1, { mainRegionsOnly: .1 }));
           mergeHair(prepared);
           refreshAfterMask();
         }).catch(error => {
@@ -1225,7 +1238,7 @@
           if (ticket !== generation[index]) return;
           // Multiclass labels: 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 accessories.
           [prepared.bodyMask, prepared.skinMask, prepared.coarseHairMask, prepared.accessoryMask, prepared.neckMask] = makeCategoryMasks(segmenter, prepared.aligned,
-            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: true }), label => label === 3, label => label === 1, label => label === 5, label => label === 2);
+            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: .25 }), label => label === 3, Object.assign(label => label === 1, { mainRegionsOnly: .1 }), label => label === 5, label => label === 2);
           mergeHair(prepared);
           refreshAfterMask();
         }).catch(error => {
