@@ -318,7 +318,8 @@
       const anchors = [0, 160, 320, 480, 640];
       for (const x of anchors) { pts.push({x, y: 0}, {x, y: SIZE}); }
       for (const y of anchors.slice(1, -1)) { pts.push({x: 0, y}, {x: SIZE, y}); }
-      return { aligned, pts, quality };
+      const background = photoEdgeColor(photo).match(/\d+/g).map(Number);
+      return { aligned, pts, quality, background };
     }
     function updatePhotoAdvice() {
       if (!faces[0] || !faces[1]) { photoAdvice.hidden = true; return; }
@@ -618,8 +619,12 @@
       };
       const bodyMask = studioBackground ? bodyMaskFor(bodyOwner) : null;
       const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
-      const selectedMask = !hairFace?.hairUnion ? null
-        : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid);
+      // Hair masks sometimes take in patches of the photo's plain backdrop (a
+      // white gap by an ear); drawn as "hair" they showed as white slivers.
+      // Pixels that match the photo's background colour are dropped.
+      const selectedMask = !hairFace?.hairUnion ? null : withoutBackdrop(
+        hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid),
+        hairLayer, hairFace.background);
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       // The neck and shoulders come from one photo (by slider side, or by hair
       // choice on the photo background), so their skin tone jumped at the
@@ -793,10 +798,91 @@
           }
         }
       }
+      // With a hair reference, neither face supplies skin where the reference
+      // hairline sits higher or wider than theirs, which left white gaps
+      // between the blended face and the reference hair. Fill those where the
+      // reference person has skin.
+      let referenceSeam = null;
+      if (hair === 'reference' && faces[2]?.skinMask) {
+        const refSkinCanvas = warpedMask(faces[2], 'skinMask', mid);
+        if (faces[2].hairUnion) {
+          const g = refSkinCanvas.getContext('2d');
+          g.globalCompositeOperation = 'destination-out';
+          g.filter = 'blur(3px)';
+          g.drawImage(warpedMask(faces[2], 'hairUnion', mid), 0, 0);
+          g.globalCompositeOperation = 'source-over';
+          g.filter = 'none';
+        }
+        const refSkin = refSkinCanvas.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        const coverageBefore = coverage.slice();
+        // The gaps are narrow bands next to the blended forehead, so its own
+        // skin, extended into them, continues the colour with no edge; only the
+        // fine texture comes from the reference photo.
+        const refPixels = hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        const refSoft = (() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = SIZE;
+          const g = canvas.getContext('2d');
+          g.filter = 'blur(3px)';
+          g.drawImage(hairLayer, 0, 0);
+          return g.getImageData(0, 0, SIZE, SIZE).data;
+        })();
+        const extended = pushPullFill(pureSkin, Float32Array.from({length: SIZE*SIZE}, (_, p) => (coverage[p] * confidence[p]) ** 4));
+        // The reference face can be a little wider than the blend (its cheek
+        // or ear showed as a white sliver beside the face), so allow more room.
+        const area = softMask(g => traceFaceArea(g, mid, 1.3), 6);
+        // Thin slivers squeezed between the face and the reference hair (by an
+        // ear, along the jaw) count too, even where the reference photo shows
+        // no skin there.
+        const refHair = selectedMask ? selectedMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data : null;
+        const nearFace = softMask(g => {
+          const image = new ImageData(SIZE, SIZE);
+          for (let p = 0; p < SIZE*SIZE; p++) { image.data.fill(255, p*4, p*4+3); image.data[p*4+3] = 255*coverage[p]; }
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = SIZE;
+          canvas.getContext('2d').putImageData(image, 0, 0);
+          g.drawImage(canvas, 0, 0);
+        }, 8);
+        const nearRefHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
+        for (let p = 0; p < SIZE*SIZE; p++) {
+          const i = p*4;
+          const squeezed = nearRefHair ? Math.min(1, nearFace[i+3]/255*2.5) * Math.min(1, nearRefHair[i+3]/255*2.5) * (1 - refHair[i+3]/255) : 0;
+          const gap = Math.max(refSkin[i+3]/255 * area[i+3]/255, squeezed) * (1 - coverage[p]);
+          if (gap < .01) continue;
+          // Where the face was partly covered, the rest of the pixel is
+          // background (often white); swap that share for skin rather than
+          // blending over it, which left a pale line along the old edge.
+          const face = coverage[p];
+          for (let channel = 0; channel < 3; channel++) {
+            const skin = extended[i+channel] + Math.max(-12, Math.min(12, refPixels[i+channel] - refSoft[i+channel]));
+            const base = face < .999 ? (output.data[i+channel] - pureSkin[i+channel]*face) / (1 - face) : 0;
+            output.data[i+channel] = pureSkin[i+channel]*face + skin*gap + base*Math.max(0, 1 - face - gap);
+            pureSkin[i+channel] = face + gap > 0 ? (pureSkin[i+channel]*face + skin*gap) / (face + gap) : skin;
+          }
+          coverage[p] += gap;
+          pureWeight[p] = Math.max(pureWeight[p], coverage[p] ** 8);
+        }
+        // The strip where the blended face used to end normally sits under the
+        // chosen hair; a reference hairline starts higher and exposes it, with
+        // a faint bright ridge and shadow along it. Heal that strip.
+        const band = softMask(g => {
+          const image = new ImageData(SIZE, SIZE);
+          for (let p = 0; p < SIZE*SIZE; p++) {
+            image.data.fill(255, p*4, p*4+3);
+            image.data[p*4+3] = coverageBefore[p] > .02 && coverageBefore[p] < .98 && refSkin[p*4+3] > 128 ? 255 : 0;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = SIZE;
+          canvas.getContext('2d').putImageData(image, 0, 0);
+          for (let dy = -8; dy <= 8; dy += 4) for (let dx = -8; dx <= 8; dx += 4) g.drawImage(canvas, dx, dy);
+        }, 4);
+        referenceSeam = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.min(1, band[p*4+3]/255*1.5) * coverage[p]);
+      }
       // Skin right under the chosen hair is naturally shadowed; leave it be
       // rather than brightening it into a pale rim.
       const nearHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
       matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)), nearHair);
+      if (referenceSeam) healSeam(output.data, referenceSeam, coverage);
       // On a clean background, the few pixels between the skin and the chosen
       // hair would otherwise show the dark backing, which reads as a grey
       // outline. Carry the skin on under the hair's soft edge instead, so the
@@ -1112,6 +1198,53 @@
         for (let channel = 0; channel < 3; channel++) pixels[p*4+channel] *= 1 + (tint.ratio[channel]-1)*amount;
       }
       return pixels;
+    }
+    // Remove low-frequency artifacts (a bright ridge, a shadow line) inside a
+    // strip: bridge its broad brightness smoothly from the pixels on either
+    // side, and keep the strip's own fine texture.
+    function healSeam(pixels, strip, coverage) {
+      // Bridge only from skin on either side, never from hair or background.
+      const bridge = pushPullFill(pixels, strip.map((s, p) => ((1 - s) * coverage[p] ** 4) ** 2));
+      const soft = (() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = SIZE;
+        canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), SIZE, SIZE), 0, 0);
+        const blurred = document.createElement('canvas');
+        blurred.width = blurred.height = SIZE;
+        const g = blurred.getContext('2d');
+        // Only the finest grain counts as texture; a thin seam line is wider
+        // than this and gets bridged away.
+        g.filter = 'blur(1px)';
+        g.drawImage(canvas, 0, 0);
+        return g.getImageData(0, 0, SIZE, SIZE).data;
+      })();
+      for (let p = 0; p < SIZE*SIZE; p++) {
+        const amount = strip[p];
+        if (amount < .01) continue;
+        for (let channel = 0; channel < 3; channel++) {
+          const i = p*4 + channel;
+          const healed = bridge[i] + Math.max(-5, Math.min(5, pixels[i] - soft[i]));
+          pixels[i] += (healed - pixels[i]) * amount;
+        }
+      }
+    }
+    function withoutBackdrop(mask, layer, background) {
+      if (!background) return mask;
+      const copy = document.createElement('canvas');
+      copy.width = copy.height = SIZE;
+      const g = copy.getContext('2d');
+      g.drawImage(mask, 0, 0);
+      const alpha = g.getImageData(0, 0, SIZE, SIZE), pixels = layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+      const bright = background[0] + background[1] + background[2] > 600;
+      if (!bright) return mask;
+      for (let p = 0; p < SIZE*SIZE; p++) {
+        const i = p*4;
+        if (!alpha.data[i+3]) continue;
+        const distance = Math.hypot(pixels[i]-background[0], pixels[i+1]-background[1], pixels[i+2]-background[2]);
+        if (distance < 28) alpha.data[i+3] *= Math.max(0, (distance - 10) / 18);
+      }
+      g.putImageData(alpha, 0, 0);
+      return copy;
     }
     function scheduleRender() {
       if (scheduled) return;
