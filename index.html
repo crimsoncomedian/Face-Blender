@@ -29,10 +29,6 @@
     .drop input { position: absolute; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 2; }
     .drop.has-image input { height: 40px; top: auto; bottom: 0; }
     .labels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; text-align: center; font-weight: 650; font-size: .84rem; margin: 10px 0 24px; }
-    .hair-reference { display: flex; align-items: center; gap: 14px; margin-top: 22px; }
-    .hair-reference .drop { width: 120px; flex: 0 0 120px; }
-    .hair-reference p { color: #52637c; font-size: .83rem; line-height: 1.45; margin: 5px 0 0; }
-    .hair-reference + .control-heading { margin-top: 26px; }
     .control-heading { display: flex; justify-content: space-between; font-weight: 700; font-size: .95rem; }
     .control-heading output { color: #315eb8; }
     input[type="range"] { width: 100%; margin: 17px 0 8px; accent-color: #315eb8; cursor: pointer; }
@@ -45,10 +41,7 @@
     .hair-choice label:has(input:checked) { border-color: #315eb8; background: #eef4ff; color: #244d9d; font-weight: 700; }
     .hair-choice label:has(input:disabled) { opacity: .55; cursor: not-allowed; }
     .hair-choice input { accent-color: #315eb8; margin-right: 5px; }
-    .tips { background: #f3f7fe; border: 1px solid #dce8fa; border-radius: 12px; margin-top: 24px; padding: 15px; color: #4b5d79; font-size: .86rem; line-height: 1.5; }
-    .tips strong { color: #233752; }
-    .photo-advice { background: #fff8e9; border: 1px solid #f1dbab; border-radius: 12px; margin-top: 16px; padding: 13px 15px; color: #665125; font-size: .84rem; line-height: 1.5; }
-    .photo-advice[hidden] { display: none; }
+    .hint { display: block; font-size: .86rem; color: #6a7a92; margin-top: 3px; }
     .result-frame { aspect-ratio: 1; background: #e6ebf2; border-radius: 14px; overflow: hidden; position: relative; display: grid; place-items: center; }
     canvas { display: block; width: 100%; height: 100%; }
     .placeholder { position: absolute; text-align: center; padding: 30px; color: #64758e; max-width: 290px; line-height: 1.5; }
@@ -56,8 +49,6 @@
     .result-frame.ready .placeholder { display: none; }
     .actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
     .actions { flex-wrap: wrap; }
-    .finish-panel { margin-top: 22px; border-top: 1px solid #dce4ee; padding-top: 19px; }
-    .finish-panel p { color: #52637c; font-size: .87rem; line-height: 1.5; margin: 7px 0 13px; }
     .mode-tabs { display: flex; gap: 8px; margin: 0 0 13px; }
     .mode-tabs button { padding: 7px 12px; font-size: .8rem; }
     .mode-tabs button[aria-selected="false"] { background: #edf2f9; color: #4b5e79; }
@@ -67,6 +58,9 @@
     button { appearance: none; background: #315eb8; color: white; border: 0; border-radius: 10px; padding: 12px 19px; font: inherit; font-weight: 650; cursor: pointer; }
     button:hover:not(:disabled) { background: #244d9d; }
     button:disabled { background: #aab6ca; cursor: not-allowed; }
+    button.secondary { background: #edf2f9; color: #244d9d; }
+    button.secondary:hover:not(:disabled) { background: #dfe8f6; }
+    button.secondary:disabled { background: #f1f4f8; color: #9aa7ba; }
     .status { margin: 0; font-size: .84rem; color: #50627b; line-height: 1.4; }
     .status.error { color: #ae322e; }
     footer { color: #67758b; font-size: .8rem; line-height: 1.5; margin-top: 25px; }
@@ -74,40 +68,31 @@
   </style>
 </head>
 <body>
-  <header><h1>Face Blend Studio</h1><p>Two faces, with optional hair reference. Free and processed in your browser.</p></header>
+  <header><h1>Face Blend Studio</h1><p>Blend two faces. Free and processed in your browser.</p></header>
   <main>
-    <p class="intro">Add a clear photo of each person. Use the slider for an instant blend, then refine and download the result you like.</p>
+    <p class="intro">Add a clear photo of each person, then use the slider to blend them. <span class="hint">Works best with one face per photo, looking toward the camera, with similar lighting.</span></p>
     <div class="grid">
       <section class="card" aria-label="Photos and settings">
-        <h2>1. Add two faces</h2>
+        <h2>Add two faces</h2>
         <div class="upload-grid">
           <label class="drop" id="dropA"><img alt="Preview of first photo"><span class="icon" aria-hidden="true">+</span><strong>Choose a photo</strong><small>or drop it here</small><input type="file" accept="image/*" aria-label="First face photo"></label>
           <label class="drop" id="dropB"><img alt="Preview of second photo"><span class="icon" aria-hidden="true">+</span><strong>Choose a photo</strong><small>or drop it here</small><input type="file" accept="image/*" aria-label="Second face photo"></label>
         </div>
         <div class="labels"><span>Face A</span><span>Face B</span></div>
-        <div class="hair-reference"><label class="drop" id="dropHair"><img alt="Preview of hair reference photo"><span class="icon" aria-hidden="true">+</span><strong>Add hair photo</strong><input type="file" accept="image/*" aria-label="Optional hair reference photo"></label><div><strong>Hair reference (optional)</strong><p>Use a photo with a visible face and the hairstyle you want. A similar head angle works best.</p></div></div>
-        <div class="control-heading"><label for="blend">2. Choose the mix</label><output id="percent" for="blend">50% / 50%</output></div>
+        <div class="control-heading"><label for="blend">Choose the mix</label><output id="percent" for="blend">50% / 50%</output></div>
         <input id="blend" type="range" min="0" max="100" value="50" aria-label="Amount of Face B">
         <div class="ends"><span>Face A</span><span>Face B</span></div>
         <fieldset class="hair-choice"><legend>Choose the hair separately</legend><div class="options">
           <label><input type="radio" name="hair" value="a" checked>Face A</label>
           <label><input type="radio" name="hair" value="b">Face B</label>
-          <label><input type="radio" name="hair" value="reference" disabled>Hair reference</label>
         </div></fieldset>
         <fieldset class="hair-choice"><legend>Background</legend><div class="options"><label><input type="radio" name="background" value="studio" checked>Clean white</label><label><input type="radio" name="background" value="photo">Keep photo background</label></div></fieldset>
-        <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
-        <div id="photoAdvice" class="photo-advice" role="status" hidden></div>
-        <div class="finish-panel">
-          <strong>3. Refine the blend</strong>
-          <p>Balances the forehead, cheeks, and jaw separately to smooth uneven lighting and complexion. Keeps the live preview’s facial features and hair choice. Everything runs in your browser.</p>
-          <button id="generate" disabled>Refine complexion</button>
-        </div>
       </section>
       <section class="card" aria-label="Blended result">
         <h2>Your blend</h2>
         <div class="mode-tabs" role="tablist" aria-label="Result view"><button id="previewTab" role="tab" aria-selected="true" aria-controls="frame">Live preview</button><button id="finishedTab" role="tab" aria-selected="false" aria-controls="frame" disabled>Refined</button></div>
         <div class="result-frame" id="frame"><canvas id="result" width="640" height="640" aria-label="Blended face preview" role="img"></canvas><canvas id="finished" width="640" height="640" aria-label="Refined face composite" role="img"></canvas><div class="placeholder"><b aria-hidden="true">◌</b>Your blended face will appear here after you add both photos.</div></div>
-        <div class="actions"><button id="download" disabled>Download preview</button><p id="status" class="status" role="status" aria-live="polite">Waiting for two photos.</p></div>
+        <div class="actions"><button id="generate" class="secondary" disabled title="Evens out lighting and complexion across the forehead, cheeks, and jaw">Refine complexion</button><button id="download" disabled>Download preview</button><p id="status" class="status" role="status" aria-live="polite">Waiting for two photos.</p></div>
       </section>
     </div>
     <footer>Your photos stay in your browser. An internet connection is needed to load the face detection and segmentation models.</footer>
@@ -124,7 +109,6 @@
     const download = document.querySelector('#download');
     const slider = document.querySelector('#blend');
     const percent = document.querySelector('#percent');
-    const photoAdvice = document.querySelector('#photoAdvice');
     const generate = document.querySelector('#generate');
     const finishedCanvas = document.querySelector('#finished');
     const finishedContext = finishedCanvas.getContext('2d');
@@ -134,7 +118,7 @@
     layers.forEach(c => { c.width = c.height = SIZE; });
     const faces = [null, null];
     const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-    let detectorPromise, hairSegmenterPromise, personSegmenterPromise, triangleIndices, scheduled = false, generation = [0, 0, 0];
+    let detectorPromise, hairSegmenterPromise, personSegmenterPromise, triangleIndices, scheduled = false, generation = [0, 0];
     let finished = false, finishing = false, latestHairMasks = [null, null], latestSelectedHairMask = null;
 
     function setView(view) {
@@ -321,18 +305,6 @@
       const background = photoEdgeColor(photo).match(/\d+/g).map(Number);
       return { aligned, pts, quality, background };
     }
-    function updatePhotoAdvice() {
-      if (!faces[0] || !faces[1]) { photoAdvice.hidden = true; return; }
-      const a = faces[0].quality, b = faces[1].quality;
-      const warnings = [];
-      if (Math.abs(a.yaw-b.yaw) > .16 || Math.abs(a.roll-b.roll) > .16) warnings.push('different head angles');
-      if (Math.abs(a.mouthOpen-b.mouthOpen) > .12) warnings.push('different expressions');
-      if (Math.min(a.eyeDistance,b.eyeDistance) < 65) warnings.push('a face that is small in its photo');
-      const hair = document.querySelector('input[name="hair"]:checked').value;
-      if (hair === 'reference' && faces[2] && Math.abs(faces[2].quality.yaw-(a.yaw+b.yaw)/2) > .19) warnings.push('a hair reference photographed from a different angle');
-      photoAdvice.hidden = warnings.length === 0;
-      if (warnings.length) photoAdvice.textContent = `These photos may be harder to blend because of ${warnings.join(', ')}. You can still use them, or try photos with a similar pose and expression.`;
-    }
     function affine(g, src, dst) {
       const [p, q, r] = src, [a, b, c] = dst;
       const det = p.x * (q.y - r.y) + q.x * (r.y - p.y) + r.x * (p.y - q.y);
@@ -456,16 +428,7 @@
       latestHairMasks = hairPixels;
       latestSelectedHairMask = null;
       const hair = document.querySelector('input[name="hair"]:checked').value;
-      let hairLayer = layers[hair === 'b' ? 1 : 0];
-      if (hair === 'reference' && faces[2]) {
-        hairLayer = document.createElement('canvas');
-        hairLayer.width = hairLayer.height = SIZE;
-        const hairContext = hairLayer.getContext('2d');
-        for (let i = 0; i < triangleIndices.length; i += 3) {
-          const ids = [triangleIndices[i], triangleIndices[i+1], triangleIndices[i+2]];
-          drawTriangle(hairContext, faces[2].aligned, ids.map(j => faces[2].pts[j]), ids.map(j => mid[j]));
-        }
-      }
+      const hairLayer = layers[hair === 'b' ? 1 : 0];
       const sourcePixels = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
       frames.forEach((alpha, k) => {
         if (!alpha) return;
@@ -510,7 +473,7 @@
           g.globalCompositeOperation = 'destination-out';
           for (const ids of features.slice(2)) featureEllipse(g, ids, 6);
         }, 4);
-        const hairOwnerIndex = hair === 'a' ? 0 : hair === 'b' ? 1 : -1;
+        const hairOwnerIndex = hair === 'b' ? 1 : 0;
         // Where the other person shows skin and this person doesn't is this
         // person's bangs, whether or not the hair model caught every strand.
         const bangs = [0, 1].map(k => {
@@ -593,7 +556,7 @@
       // supplies the separate hair overlay; otherwise switching hairstyles
       // exposes the other person's forehead around the face-oval feather.
       const bodyOwner = t < .5 ? 0 : 1;
-      const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
+      const hairOwner = hair === 'b' ? 1 : 0;
       const studioBackground = document.querySelector('input[name="background"]:checked').value === 'studio';
       // Unusual hair (bright dye, for example) can be tagged as clothing; hair
       // never belongs to the body layer, so take it back out. Likewise nothing
@@ -618,12 +581,12 @@
         return mask;
       };
       const bodyMask = studioBackground ? bodyMaskFor(bodyOwner) : null;
-      const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
+      const hairFace = faces[hair === 'b' ? 1 : 0];
       // Hair masks sometimes take in patches of the photo's plain backdrop (a
       // white gap by an ear); drawn as "hair" they showed as white slivers.
       // Pixels that match the photo's background colour are dropped.
       const selectedMask = !hairFace?.hairUnion ? null : withoutBackdrop(
-        hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid),
+        faceMasks[hair === 'b' ? 1 : 0],
         hairLayer, hairFace.background);
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       // The neck and shoulders come from one photo (by slider side, or by hair
@@ -681,7 +644,7 @@
             }
           }
           const other = 1 - owner;
-          const otherMask = faceMasks[owner] && (hair === 'reference' || hairOwner !== owner) && bodyMaskFor(other);
+          const otherMask = faceMasks[owner] && hairOwner !== owner && bodyMaskFor(other);
           if (otherMask) {
             const otherAlpha = otherMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
             const ownHair = softMask(g => g.drawImage(faceMasks[owner], 0, 0), 3);
@@ -798,91 +761,10 @@
           }
         }
       }
-      // With a hair reference, neither face supplies skin where the reference
-      // hairline sits higher or wider than theirs, which left white gaps
-      // between the blended face and the reference hair. Fill those where the
-      // reference person has skin.
-      let referenceSeam = null;
-      if (hair === 'reference' && faces[2]?.skinMask) {
-        const refSkinCanvas = warpedMask(faces[2], 'skinMask', mid);
-        if (faces[2].hairUnion) {
-          const g = refSkinCanvas.getContext('2d');
-          g.globalCompositeOperation = 'destination-out';
-          g.filter = 'blur(3px)';
-          g.drawImage(warpedMask(faces[2], 'hairUnion', mid), 0, 0);
-          g.globalCompositeOperation = 'source-over';
-          g.filter = 'none';
-        }
-        const refSkin = refSkinCanvas.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-        const coverageBefore = coverage.slice();
-        // The gaps are narrow bands next to the blended forehead, so its own
-        // skin, extended into them, continues the colour with no edge; only the
-        // fine texture comes from the reference photo.
-        const refPixels = hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-        const refSoft = (() => {
-          const canvas = document.createElement('canvas');
-          canvas.width = canvas.height = SIZE;
-          const g = canvas.getContext('2d');
-          g.filter = 'blur(3px)';
-          g.drawImage(hairLayer, 0, 0);
-          return g.getImageData(0, 0, SIZE, SIZE).data;
-        })();
-        const extended = pushPullFill(pureSkin, Float32Array.from({length: SIZE*SIZE}, (_, p) => (coverage[p] * confidence[p]) ** 4));
-        // The reference face can be a little wider than the blend (its cheek
-        // or ear showed as a white sliver beside the face), so allow more room.
-        const area = softMask(g => traceFaceArea(g, mid, 1.3), 6);
-        // Thin slivers squeezed between the face and the reference hair (by an
-        // ear, along the jaw) count too, even where the reference photo shows
-        // no skin there.
-        const refHair = selectedMask ? selectedMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data : null;
-        const nearFace = softMask(g => {
-          const image = new ImageData(SIZE, SIZE);
-          for (let p = 0; p < SIZE*SIZE; p++) { image.data.fill(255, p*4, p*4+3); image.data[p*4+3] = 255*coverage[p]; }
-          const canvas = document.createElement('canvas');
-          canvas.width = canvas.height = SIZE;
-          canvas.getContext('2d').putImageData(image, 0, 0);
-          g.drawImage(canvas, 0, 0);
-        }, 8);
-        const nearRefHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
-        for (let p = 0; p < SIZE*SIZE; p++) {
-          const i = p*4;
-          const squeezed = nearRefHair ? Math.min(1, nearFace[i+3]/255*2.5) * Math.min(1, nearRefHair[i+3]/255*2.5) * (1 - refHair[i+3]/255) : 0;
-          const gap = Math.max(refSkin[i+3]/255 * area[i+3]/255, squeezed) * (1 - coverage[p]);
-          if (gap < .01) continue;
-          // Where the face was partly covered, the rest of the pixel is
-          // background (often white); swap that share for skin rather than
-          // blending over it, which left a pale line along the old edge.
-          const face = coverage[p];
-          for (let channel = 0; channel < 3; channel++) {
-            const skin = extended[i+channel] + Math.max(-12, Math.min(12, refPixels[i+channel] - refSoft[i+channel]));
-            const base = face < .999 ? (output.data[i+channel] - pureSkin[i+channel]*face) / (1 - face) : 0;
-            output.data[i+channel] = pureSkin[i+channel]*face + skin*gap + base*Math.max(0, 1 - face - gap);
-            pureSkin[i+channel] = face + gap > 0 ? (pureSkin[i+channel]*face + skin*gap) / (face + gap) : skin;
-          }
-          coverage[p] += gap;
-          pureWeight[p] = Math.max(pureWeight[p], coverage[p] ** 8);
-        }
-        // The strip where the blended face used to end normally sits under the
-        // chosen hair; a reference hairline starts higher and exposes it, with
-        // a faint bright ridge and shadow along it. Heal that strip.
-        const band = softMask(g => {
-          const image = new ImageData(SIZE, SIZE);
-          for (let p = 0; p < SIZE*SIZE; p++) {
-            image.data.fill(255, p*4, p*4+3);
-            image.data[p*4+3] = coverageBefore[p] > .02 && coverageBefore[p] < .98 && refSkin[p*4+3] > 128 ? 255 : 0;
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = canvas.height = SIZE;
-          canvas.getContext('2d').putImageData(image, 0, 0);
-          for (let dy = -8; dy <= 8; dy += 4) for (let dx = -8; dx <= 8; dx += 4) g.drawImage(canvas, dx, dy);
-        }, 4);
-        referenceSeam = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.min(1, band[p*4+3]/255*1.5) * coverage[p]);
-      }
       // Skin right under the chosen hair is naturally shadowed; leave it be
       // rather than brightening it into a pale rim.
       const nearHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
       matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)), nearHair);
-      if (referenceSeam) healSeam(output.data, referenceSeam, coverage);
       // On a clean background, the few pixels between the skin and the chosen
       // hair would otherwise show the dark backing, which reads as a grey
       // outline. Carry the skin on under the hair's soft edge instead, so the
@@ -907,7 +789,7 @@
       // to the hair and the boundary read as a pale outline. Copy the chosen
       // hair's owner's own hairline shading onto the new skin, as a brightness
       // ratio against their clear skin, so it matches the hair on top.
-      const ownerSkinMask = selectedMask && (hair === 'reference' ? warpedMask(faces[2], 'skinMask', mid) : skinMasks[hair === 'b' ? 1 : 0]);
+      const ownerSkinMask = selectedMask && skinMasks[hair === 'b' ? 1 : 0];
       let original = null, ownerSkin = null;
       if (ownerSkinMask) {
         // Only skin well clear of the hair counts as the owner's reference
@@ -959,7 +841,6 @@
         ctx.drawImage(overlay, 0, 0);
       }
       frame.classList.add('ready');
-      updatePhotoAdvice();
       download.disabled = false;
       generate.disabled = finishing;
       const masksFailed = faces.some(face => face?.maskFailed);
@@ -1198,35 +1079,6 @@
         for (let channel = 0; channel < 3; channel++) pixels[p*4+channel] *= 1 + (tint.ratio[channel]-1)*amount;
       }
       return pixels;
-    }
-    // Remove low-frequency artifacts (a bright ridge, a shadow line) inside a
-    // strip: bridge its broad brightness smoothly from the pixels on either
-    // side, and keep the strip's own fine texture.
-    function healSeam(pixels, strip, coverage) {
-      // Bridge only from skin on either side, never from hair or background.
-      const bridge = pushPullFill(pixels, strip.map((s, p) => ((1 - s) * coverage[p] ** 4) ** 2));
-      const soft = (() => {
-        const canvas = document.createElement('canvas');
-        canvas.width = canvas.height = SIZE;
-        canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), SIZE, SIZE), 0, 0);
-        const blurred = document.createElement('canvas');
-        blurred.width = blurred.height = SIZE;
-        const g = blurred.getContext('2d');
-        // Only the finest grain counts as texture; a thin seam line is wider
-        // than this and gets bridged away.
-        g.filter = 'blur(1px)';
-        g.drawImage(canvas, 0, 0);
-        return g.getImageData(0, 0, SIZE, SIZE).data;
-      })();
-      for (let p = 0; p < SIZE*SIZE; p++) {
-        const amount = strip[p];
-        if (amount < .01) continue;
-        for (let channel = 0; channel < 3; channel++) {
-          const i = p*4 + channel;
-          const healed = bridge[i] + Math.max(-5, Math.min(5, pixels[i] - soft[i]));
-          pixels[i] += (healed - pixels[i]) * amount;
-        }
-      }
     }
     function withoutBackdrop(mask, layer, background) {
       if (!background) return mask;
@@ -1470,33 +1322,25 @@
       if (!file.type.startsWith('image/')) { setStatus('Please choose an image file.', true); return; }
       const ticket = ++generation[index];
       invalidateFinished();
-      if (index !== 2) {
-        faces[index] = null;
-        updatePhotoAdvice();
-        generate.disabled = true;
-        download.disabled = true;
-        frame.classList.remove('ready');
-        ctx.clearRect(0, 0, SIZE, SIZE);
-        drop.classList.remove('has-image');
-        drop.querySelector('img').removeAttribute('src');
-      }
-      setStatus(index === 2 ? 'Aligning hair reference…' : 'Finding facial landmarks…');
+      faces[index] = null;
+      generate.disabled = true;
+      download.disabled = true;
+      frame.classList.remove('ready');
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      drop.classList.remove('has-image');
+      drop.querySelector('img').removeAttribute('src');
+      setStatus('Finding facial landmarks…');
       try {
         const [image, detector] = await Promise.all([loadImage(file), getDetector()]);
         if (ticket !== generation[index]) return;
         const photo = resized(image);
         const found = detector.detect(photo).faceLandmarks;
-        if (!found?.length) throw new Error(index === 2 ? 'No face found in the hair reference. Use a photo showing the face beneath the hairstyle.' : `No face found in Face ${index ? 'B' : 'A'}. Try a clear, front-facing photo.`);
+        if (!found?.length) throw new Error(`No face found in Face ${index ? 'B' : 'A'}. Try a clear, front-facing photo.`);
         const prepared = prepareFace(photo, found[0]);
         if (ticket !== generation[index]) return;
         faces[index] = prepared;
         drop.querySelector('img').src = photo.toDataURL('image/jpeg', .8);
         drop.classList.add('has-image');
-        if (index === 2) {
-          const option = document.querySelector('input[name="hair"][value="reference"]');
-          option.disabled = false;
-          option.checked = true;
-        }
         if (faces[0] && faces[1]) scheduleRender();
         else setStatus('Add the second photo.');
         getHairSegmenter().then(segmenter => {
@@ -1531,7 +1375,7 @@
         console.error(err);
       }
     }
-    for (const [i, drop] of [document.querySelector('#dropA'), document.querySelector('#dropB'), document.querySelector('#dropHair')].entries()) {
+    for (const [i, drop] of [document.querySelector('#dropA'), document.querySelector('#dropB')].entries()) {
       drop.querySelector('input').addEventListener('change', e => accept(e.target.files[0], i, drop));
       drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('drag'); });
       drop.addEventListener('dragleave', () => drop.classList.remove('drag'));
