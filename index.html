@@ -636,7 +636,7 @@
             output.data[i+channel] = output.data[i+channel]*(1-face)+blended*face;
             pureSkin[i+channel] = blended;
           }
-          pureWeight[i/4] = face*face;
+          pureWeight[i/4] = face ** 8;
         }
         output.data[i+3] = 255;
       }
@@ -657,13 +657,61 @@
           const gate = faceArea[p*4+3]/255 * Math.min(1, nearHair[p*4+3]/255*2.5), face = coverage[p];
           if (gate < .01 || face > .99) continue;
           for (let channel = 0; channel < 3; channel++) {
-            const skin = pureSkin[p*4+channel]*face + extended[p*4+channel]*(1-face);
+            const clear = face ** 4;
+            const skin = pureSkin[p*4+channel]*clear + extended[p*4+channel]*(1-clear);
             output.data[p*4+channel] += (skin - output.data[p*4+channel]) * gate;
           }
         }
       }
+      // A real hairline is not a hard edge: the skin darkens over the last few
+      // pixels (shadow, fine baby hairs). Without that, bright skin ran right up
+      // to the hair and the boundary read as a pale outline. Copy the chosen
+      // hair's owner's own hairline shading onto the new skin, as a brightness
+      // ratio against their clear skin, so it matches the hair on top.
+      const ownerSkinMask = selectedMask && (hair === 'reference' ? warpedMask(faces[2], 'skinMask', mid) : skinMasks[hair === 'b' ? 1 : 0]);
+      let original = null, ownerSkin = null;
+      if (ownerSkinMask) {
+        // Only skin well clear of the hair counts as the owner's reference
+        // colour: the same ramped weight used for blending, which fades out
+        // over the shaded strip next to the hair.
+        const clearOfHair = softMask(g => g.drawImage(ownerSkinMask, 0, 0), 14);
+        original = hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        ownerSkin = pushPullFill(original, Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.max(0, Math.min(1, (clearOfHair[p*4+3]/255-.65)/.35))**3));
+        for (let p = 0; p < SIZE*SIZE; p++) {
+          const i = p*4, gate = faceArea[i+3]/255 * Math.min(1, nearHair[i+3]/255*3);
+          if (gate < .01 || hairAlpha[i+3] > 250) continue;
+          for (let channel = 0; channel < 3; channel++) {
+            const ratio = Math.max(.45, Math.min(1, original[i+channel] / Math.max(1, ownerSkin[i+channel])));
+            output.data[i+channel] *= 1 + (ratio - 1)*gate;
+          }
+        }
+      }
       ctx.putImageData(output, 0, 0);
+      // The soft edge of the chosen hair is part hair, part its owner's own
+      // skin (often shadowed at the hairline). Laid over the new face, that old
+      // skin showed as a discoloured band along the hairline. For each edge
+      // pixel, estimate how much is hair (between pure hair colour and the
+      // owner's skin colour) and swap the skin share for the new face's skin,
+      // keeping the fine strands.
       if (selectedMask) {
+        if (ownerSkin) {
+          const pureHair = pushPullFill(original, Float32Array.from({length: SIZE*SIZE}, (_, p) => (hairAlpha[p*4+3]/255)**6));
+          for (let p = 0; p < SIZE*SIZE; p++) {
+            const inFace = faceArea[p*4+3]/255, edge = hairAlpha[p*4+3]/255;
+            if (inFace < .01 || edge < .01 || edge > .99) continue;
+            const i = p*4;
+            let along = 0, span = 0;
+            for (let channel = 0; channel < 3; channel++) {
+              const d = pureHair[i+channel] - ownerSkin[i+channel];
+              along += (original[i+channel] - ownerSkin[i+channel]) * d;
+              span += d*d;
+            }
+            if (span < 300) continue;
+            const skinShare = (1 - Math.max(0, Math.min(1, along/span))) * inFace;
+            for (let channel = 0; channel < 3; channel++)
+              hairImage.data[i+channel] = original[i+channel] + skinShare * (output.data[i+channel] - ownerSkin[i+channel]);
+          }
+        }
         latestSelectedHairMask = hairAlpha;
         for (let i = 3; i < hairImage.data.length; i += 4) hairImage.data[i] = hairAlpha[i];
         const overlay = document.createElement('canvas');
