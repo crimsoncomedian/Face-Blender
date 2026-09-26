@@ -456,29 +456,72 @@
         // Anywhere on the face (the landmark outline, plus the forehead above
         // it up to wherever the hair starts), except brows, eyes, and mouth,
         // which each person keeps as their own.
-        const region = softMask(g => {
-          traceFaceOval(g, mid, 1); g.fill();
-          const arc = [54, 103, 67, 109, 10, 338, 297, 332, 284].map(i => mid[i]);
+        // Listed in mirror order: the n-th landmark of one brow faces the n-th of the other.
+        const browIds = [[70, 63, 105, 66, 107, 46, 53, 52, 65, 55], [300, 293, 334, 296, 336, 276, 283, 282, 295, 285]];
+        const featureEllipse = (g, ids, margin) => {
+          const xs = ids.map(i => mid[i].x), ys = ids.map(i => mid[i].y);
           g.beginPath();
-          g.moveTo(arc[0].x, 0);
-          for (const point of arc) g.lineTo(point.x, point.y);
-          g.lineTo(arc.at(-1).x, 0);
+          g.ellipse((Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2,
+            (Math.max(...xs)-Math.min(...xs))/2 + margin, (Math.max(...ys)-Math.min(...ys))/2 + margin, 0, 0, Math.PI*2);
           g.fill();
+        };
+        const region = softMask(g => {
+          traceFaceArea(g, mid);
           g.globalCompositeOperation = 'destination-out';
-          const features = [[70, 63, 105, 66, 107, 46, 53, 52, 65, 55], [336, 296, 334, 293, 300, 285, 295, 282, 283, 276],
+          const features = [...browIds,
             [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
             [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
             [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]];
-          for (const ids of features) {
-            const xs = ids.map(i => mid[i].x), ys = ids.map(i => mid[i].y);
-            g.beginPath();
-            g.ellipse((Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2,
-              (Math.max(...xs)-Math.min(...xs))/2 + 10, (Math.max(...ys)-Math.min(...ys))/2 + 10, 0, 0, Math.PI*2);
-            g.fill();
-          }
+          for (const ids of features) featureEllipse(g, ids, 10);
         }, 10);
+        // Bangs that reach the eyebrows end in thin strands the hair models
+        // miss. Hair hangs down, so the forehead and brows just below someone's
+        // detected bangs are treated as covered, and (unless that person's
+        // hair was chosen) rebuilt from the other person, colour-matched.
+        const browZone = softMask(g => { for (const ids of browIds) featureEllipse(g, ids, 12); }, 4);
+        const hairOwnerIndex = hair === 'a' ? 0 : hair === 'b' ? 1 : -1;
+        const covered = faceMasks.map(mask => mask && softMask(g => {
+          for (let drop = 0; drop <= 36; drop += 4) g.drawImage(mask, 0, drop);
+        }, 3));
+        const forced = [0, 1].map(k => Float32Array.from({length: SIZE*SIZE}, (_, p) => {
+          if (k === hairOwnerIndex || !covered[k]) return 0;
+          const mine = covered[k][p*4+3]/255, theirs = covered[1-k] ? covered[1-k][p*4+3]/255 : 0;
+          const face = Math.max(browZone[p*4+3], region[p*4+3])/255;
+          return face * mine * (1 - theirs);
+        }));
+        // A brow hidden under bangs is best rebuilt from the same person's other
+        // brow, mirrored across the face, when that one is clear: it keeps
+        // their own brow shape and colour instead of borrowing someone else's.
+        const browMasks = browIds.map(ids => softMask(g => featureEllipse(g, ids, 12), 4));
+        forced.forEach((force, k) => {
+          const share = browMasks.map(mask => {
+            let covered = 0, area = 0;
+            for (let p = 0; p < force.length; p++) { const m = mask[p*4+3]/255; covered += force[p]*m; area += m; }
+            return covered / Math.max(1, area);
+          });
+          for (const side of [0, 1]) {
+            if (share[side] < .12 || share[1-side] > .08) continue;
+            const source = document.createElement('canvas');
+            source.width = source.height = SIZE;
+            source.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(sourcePixels[k]), SIZE, SIZE), 0, 0);
+            const mirrored = document.createElement('canvas');
+            mirrored.width = mirrored.height = SIZE;
+            const g = mirrored.getContext('2d');
+            g.setTransform(...fitAffine(browIds[1-side].map(i => mid[i]), browIds[side].map(i => mid[i])));
+            g.drawImage(source, 0, 0);
+            const mirror = g.getImageData(0, 0, SIZE, SIZE).data, mask = browMasks[side];
+            for (let p = 0; p < force.length; p++) {
+              const amount = force[p] * mask[p*4+3]/255;
+              if (amount < .01) continue;
+              for (let channel = 0; channel < 3; channel++)
+                sourcePixels[k][p*4+channel] += (mirror[p*4+channel] - sourcePixels[k][p*4+channel]) * amount;
+              force[p] -= amount;
+            }
+          }
+        });
         const ownWeight = skinWeight.map(weight => weight.slice()), ownSkin = skinAlpha.map(skin => skin.slice());
-        for (let k = 0; k < 2; k++) fillHiddenSkin(sourcePixels[k], skinAlpha[k], skinWeight[k], sourcePixels[1-k], ownWeight[k], ownSkin[1-k], region);
+        const originals = sourcePixels.map(pixels => new Uint8ClampedArray(pixels));
+        for (let k = 0; k < 2; k++) fillHiddenSkin(sourcePixels[k], skinAlpha[k], skinWeight[k], originals[1-k], ownWeight[k], ownSkin[1-k], ownWeight[1-k], region, forced[k]);
       }
       // The face slider chooses the underlying skin and body. Hair choice only
       // supplies the separate hair overlay; otherwise switching hairstyles
@@ -493,11 +536,14 @@
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       // Soft hair edges carry the old background's colour (a red flag becomes a
       // red fringe). On a clean background, edge pixels take the colour of
-      // nearby solid hair instead.
+      // nearby solid hair instead. Over the face the original edge pixels are
+      // kept: they are the real wispy hairline, and smoothing them into one
+      // colour left a grey outline along the forehead.
       const hairImage = selectedMask && hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       const hairAlpha = selectedMask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+      const faceArea = softMask(g => traceFaceArea(g, mid), 6);
       if (hairImage && bodyMask) {
-        const solid = Float32Array.from({length: SIZE*SIZE}, (_, p) => (hairAlpha[p*4+3]/255)**4);
+        const solid = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.max((hairAlpha[p*4+3]/255)**4, faceArea[p*4+3]/255));
         const inner = pushPullFill(hairImage.data, solid);
         for (let p = 0; p < solid.length; p++)
           for (let channel = 0; channel < 3; channel++)
@@ -550,6 +596,19 @@
       // rather than brightening it into a pale rim.
       const nearHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
       matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)), nearHair);
+      // On a clean background, the few pixels between the skin and the chosen
+      // hair would otherwise show the dark backing, which reads as a grey
+      // outline. Carry the skin on under the hair's soft edge instead, so the
+      // hair's fine ends lie on skin like a real hairline.
+      if (bodyMask && nearHair) {
+        const extended = pushPullFill(output.data, coverage.map(c => c*c*c));
+        for (let p = 0; p < coverage.length; p++) {
+          const amount = (1-coverage[p]) * faceArea[p*4+3]/255 * Math.min(1, nearHair[p*4+3]/255*2.5);
+          if (amount < .01) continue;
+          for (let channel = 0; channel < 3; channel++)
+            output.data[p*4+channel] += (extended[p*4+channel] - output.data[p*4+channel]) * amount;
+        }
+      }
       ctx.putImageData(output, 0, 0);
       if (selectedMask) {
         latestSelectedHairMask = hairAlpha;
@@ -575,14 +634,15 @@
     // person's colouring. The shift is measured where both show skin and
     // spread smoothly into the gap. Afterwards both people count as skin
     // there, so the blend has no edge to show.
-    function fillHiddenSkin(pixels, skin, weight, other, ownWeight, otherSkin, region) {
+    function fillHiddenSkin(pixels, skin, weight, other, ownWeight, otherSkin, otherWeight, region, forced) {
       // Pixels near a hairline are often part hair or shadow, so partial
-      // confidence is trusted much less than it would be linearly.
-      const trust = ownWeight.map(w => w*w*w);
+      // confidence is trusted much less than it would be linearly. Forced
+      // pixels (brows under bangs) are not trusted at all.
+      const trust = ownWeight.map((w, p) => w*w*w * (1 - forced[p]));
       const hole = new Float32Array(SIZE*SIZE);
       let total = 0;
       for (let p = 0; p < hole.length; p++) {
-        hole[p] = Math.max(0, otherSkin[p] - ownWeight[p]) * region[p*4+3]/255;
+        hole[p] = Math.max(Math.max(0, otherSkin[p] - ownWeight[p]) * region[p*4+3]/255, forced[p] * otherSkin[p]);
         total += hole[p];
       }
       if (total < 50) return;
@@ -590,12 +650,20 @@
       for (let i = 0; i < difference.length; i += 4)
         for (let channel = 0; channel < 3; channel++) difference[i+channel] = 128 + pixels[i+channel] - other[i+channel];
       const offset = pushPullFill(difference, trust.map((w, p) => w * otherSkin[p]));
+      // Right under their own hair the other person's skin is shadowed; copying
+      // that strip made a grey band. Where their skin is less than clearly
+      // visible, use their clear skin extended smoothly instead.
+      const otherTrust = otherWeight.map(w => w*w*w);
+      const otherClear = pushPullFill(other, otherTrust);
       for (let p = 0; p < hole.length; p++) {
         if (hole[p] < .01) continue;
-        const amount = (1-trust[p]) * Math.min(1, hole[p]/Math.max(.001, 1-ownWeight[p]));
-        const i = p*4;
+        const amount = (1-trust[p]) * Math.min(1, hole[p]/Math.max(.001, 1-ownWeight[p]*(1-forced[p])));
+        const i = p*4, shade = Math.min(1, (other[i] + other[i+1] + other[i+2])/480 + (1-otherWeight[p]));
         for (let channel = 0; channel < 3; channel++) {
-          const rebuilt = other[i+channel] + offset[i+channel] - 128;
+          // The offset is a skin-colour difference; dark pixels such as brow
+          // hair take only part of it so they don't pick up a tint.
+          const source = other[i+channel]*otherWeight[p] + otherClear[i+channel]*(1-otherWeight[p]);
+          const rebuilt = source + (offset[i+channel] - 128) * shade;
           pixels[i+channel] = pixels[i+channel]*(1-amount) + rebuilt*amount;
         }
         weight[p] = Math.min(1, weight[p] + hole[p]);
@@ -608,6 +676,34 @@
     // varying colour of the skin around it. The maths stays in floating
     // point: canvas stores faint pixels with too little colour precision,
     // which showed up as horizontal stripes across large filled areas.
+    // Least-squares affine map taking the source points onto the target points,
+    // returned in canvas setTransform order (a, b, c, d, e, f).
+    function fitAffine(source, target) {
+      const normal = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], rightX = [0, 0, 0], rightY = [0, 0, 0];
+      source.forEach((point, n) => {
+        const row = [point.x, point.y, 1];
+        for (let i = 0; i < 3; i++) {
+          for (let j = 0; j < 3; j++) normal[i][j] += row[i]*row[j];
+          rightX[i] += row[i]*target[n].x;
+          rightY[i] += row[i]*target[n].y;
+        }
+      });
+      const solve = right => {
+        const m = normal.map((row, i) => [...row, right[i]]);
+        for (let col = 0; col < 3; col++) {
+          const pivot = m.slice(col).reduce((best, row, i) => Math.abs(row[col]) > Math.abs(m[best][col]) ? col+i : best, col);
+          [m[col], m[pivot]] = [m[pivot], m[col]];
+          for (let row = 0; row < 3; row++) {
+            if (row === col) continue;
+            const factor = m[row][col] / m[col][col];
+            for (let k = col; k < 4; k++) m[row][k] -= factor * m[col][k];
+          }
+        }
+        return m.map((row, i) => row[3] / row[i]);
+      };
+      const [a, c, e] = solve(rightX), [b, d, f] = solve(rightY);
+      return [a, b, c, d, e, f];
+    }
     function pushPullFill(pixels, known) {
       const color = new Float32Array(SIZE*SIZE*3), weight = Float32Array.from(known);
       for (let p = 0; p < SIZE*SIZE; p++)
@@ -735,6 +831,17 @@
         n ? g.lineTo(x, y) : g.moveTo(x, y);
       });
       g.closePath();
+    }
+    // The landmark face outline plus the forehead above it, up to the top of
+    // the image (where the hair starts varies from person to person).
+    function traceFaceArea(g, shape) {
+      traceFaceOval(g, shape, 1); g.fill();
+      const arc = [54, 103, 67, 109, 10, 338, 297, 332, 284].map(i => shape[i]);
+      g.beginPath();
+      g.moveTo(arc[0].x, 0);
+      for (const point of arc) g.lineTo(point.x, point.y);
+      g.lineTo(arc.at(-1).x, 0);
+      g.fill();
     }
     function faceOvalMask(shape, scale, blur) {
       return softMask(g => { traceFaceOval(g, shape, scale); g.fill(); }, blur);
