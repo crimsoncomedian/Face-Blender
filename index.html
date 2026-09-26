@@ -480,8 +480,21 @@
         // hair was chosen) rebuilt from the other person, colour-matched.
         const browZone = softMask(g => { for (const ids of browIds) featureEllipse(g, ids, 12); }, 4);
         const hairOwnerIndex = hair === 'a' ? 0 : hair === 'b' ? 1 : -1;
-        const covered = faceMasks.map(mask => mask && softMask(g => {
-          for (let drop = 0; drop <= 36; drop += 4) g.drawImage(mask, 0, drop);
+        // Where the other person shows skin and this person doesn't is this
+        // person's bangs, whether or not the hair model caught every strand.
+        const bangs = [0, 1].map(k => {
+          const image = new ImageData(SIZE, SIZE);
+          for (let p = 0; p < SIZE*SIZE; p++) {
+            image.data[p*4] = image.data[p*4+1] = image.data[p*4+2] = 255;
+            image.data[p*4+3] = 255 * Math.max(0, skinAlpha[1-k][p] - skinAlpha[k][p]);
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = canvas.height = SIZE;
+          canvas.getContext('2d').putImageData(image, 0, 0);
+          return canvas;
+        });
+        const covered = faceMasks.map((mask, k) => mask && softMask(g => {
+          for (let drop = 0; drop <= 40; drop += 4) { g.drawImage(mask, 0, drop); g.drawImage(bangs[k], 0, drop); }
         }, 3));
         const forced = [0, 1].map(k => Float32Array.from({length: SIZE*SIZE}, (_, p) => {
           if (k === hairOwnerIndex || !covered[k]) return 0;
@@ -541,7 +554,8 @@
       // colour left a grey outline along the forehead.
       const hairImage = selectedMask && hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       const hairAlpha = selectedMask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
-      const faceArea = softMask(g => traceFaceArea(g, mid), 6);
+      // A little wider than the face outline so it reaches the temples.
+      const faceArea = softMask(g => traceFaceArea(g, mid, 1.08), 6);
       if (hairImage && bodyMask) {
         const solid = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.max((hairAlpha[p*4+3]/255)**4, faceArea[p*4+3]/255));
         const inner = pushPullFill(hairImage.data, solid);
@@ -571,6 +585,7 @@
       const oval = faceOvalMask(mid, .96, 15);
       const dominant = Math.max(t, 1-t);
       const mixed = new Float32Array(SIZE*SIZE), coverage = new Float32Array(SIZE*SIZE);
+      const pureSkin = new Uint8ClampedArray(SIZE*SIZE*4), pureWeight = new Float32Array(SIZE*SIZE);
       for (let i = 0; i < output.data.length; i += 4) {
         const skin = [0, 1].map(k => skinAlpha[k] ? skinAlpha[k][i/4]
           : oval[i+3]/255 * (hairPixels[k] ? 1-hairPixels[k][i+3]/255 : 1));
@@ -588,7 +603,9 @@
           for (let channel = 0; channel < 3; channel++) {
             const blended = (sourcePixels[0][i+channel]*a + sourcePixels[1][i+channel]*b)/available;
             output.data[i+channel] = output.data[i+channel]*(1-face)+blended*face;
+            pureSkin[i+channel] = blended;
           }
+          pureWeight[i/4] = face*face;
         }
         output.data[i+3] = 255;
       }
@@ -600,13 +617,18 @@
       // hair would otherwise show the dark backing, which reads as a grey
       // outline. Carry the skin on under the hair's soft edge instead, so the
       // hair's fine ends lie on skin like a real hairline.
+      // The skin is extended from the pure blended skin colour: edge pixels of
+      // the output already contain some of the dark backing, and extending
+      // those gave the line a grey tint.
       if (bodyMask && nearHair) {
-        const extended = pushPullFill(output.data, coverage.map(c => c*c*c));
+        const extended = pushPullFill(pureSkin, pureWeight);
         for (let p = 0; p < coverage.length; p++) {
-          const amount = (1-coverage[p]) * faceArea[p*4+3]/255 * Math.min(1, nearHair[p*4+3]/255*2.5);
-          if (amount < .01) continue;
-          for (let channel = 0; channel < 3; channel++)
-            output.data[p*4+channel] += (extended[p*4+channel] - output.data[p*4+channel]) * amount;
+          const gate = faceArea[p*4+3]/255 * Math.min(1, nearHair[p*4+3]/255*2.5), face = coverage[p];
+          if (gate < .01 || face > .99) continue;
+          for (let channel = 0; channel < 3; channel++) {
+            const skin = pureSkin[p*4+channel]*face + extended[p*4+channel]*(1-face);
+            output.data[p*4+channel] += (skin - output.data[p*4+channel]) * gate;
+          }
         }
       }
       ctx.putImageData(output, 0, 0);
@@ -834,8 +856,8 @@
     }
     // The landmark face outline plus the forehead above it, up to the top of
     // the image (where the hair starts varies from person to person).
-    function traceFaceArea(g, shape) {
-      traceFaceOval(g, shape, 1); g.fill();
+    function traceFaceArea(g, shape, scale = 1) {
+      traceFaceOval(g, shape, scale); g.fill();
       const arc = [54, 103, 67, 109, 10, 338, 297, 332, 284].map(i => shape[i]);
       g.beginPath();
       g.moveTo(arc[0].x, 0);
