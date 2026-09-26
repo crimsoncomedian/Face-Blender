@@ -414,8 +414,23 @@
       const frames = faces.slice(0, 2).map((face, k) => {
         const accessories = warpedMask(face, 'accessoryMask', mid);
         if (!accessories) return null;
-        const widened = softMask(g => g.drawImage(accessories, 0, 0), 3);
-        const alpha = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.min(1, widened[p*4+3]/255*3) * frameRegion[p*4+3]/255);
+        // Thin wire rims sit right at the edge of the detected frame area and
+        // survived as faint arcs; paint out a wider band around the frames,
+        // but never the eyes themselves.
+        // Grow the frame outline evenly (a blur would thin out fine wire rims).
+        const widened = softMask(g => {
+          for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++)
+            if (dx*dx + dy*dy <= 4) g.drawImage(accessories, dx, dy);
+        }, 1.5);
+        const eyes = softMask(g => {
+          for (const ids of [[33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246], [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]]) {
+            const xs = ids.map(i => mid[i].x), ys = ids.map(i => mid[i].y);
+            g.beginPath();
+            g.ellipse((Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2, (Math.max(...xs)-Math.min(...xs))/2 + 3, (Math.max(...ys)-Math.min(...ys))/2 + 3, 0, 0, Math.PI*2);
+            g.fill();
+          }
+        }, 2);
+        const alpha = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.min(1, widened[p*4+3]/255*2) * frameRegion[p*4+3]/255 * (1 - eyes[p*4+3]/255));
         if (alpha.reduce((sum, a) => sum + a, 0) < 80) return null;
         if (skinMasks[k]) {
           const g = skinMasks[k].getContext('2d');
