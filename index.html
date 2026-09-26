@@ -384,7 +384,7 @@
           drawTriangle(g, faces[k].aligned, ids.map(j => faces[k].pts[j]), ids.map(j => mid[j]));
         }
       }
-      const faceMasks = faces.slice(0, 2).map(face => warpedMask(face, 'hairMask', mid));
+      const faceMasks = faces.slice(0, 2).map(face => warpedMask(face, 'hairUnion', mid));
       const hairPixels = faceMasks.map(mask => mask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
       // The skin labels come from a coarse 256px pass that spills into the
       // hairline; the sharper hair mask trims that spill back off.
@@ -399,6 +399,26 @@
         g.globalCompositeOperation = 'source-over';
         g.filter = 'none';
         return skin;
+      });
+      // Glasses frames on only one face would blend into a faint ghost pair.
+      // Frames on the face are treated as skin and painted out below.
+      const frameRegion = faceOvalMask(mid, 1.02, 4);
+      const frames = faces.slice(0, 2).map((face, k) => {
+        const accessories = warpedMask(face, 'accessoryMask', mid);
+        if (!accessories) return null;
+        const widened = softMask(g => g.drawImage(accessories, 0, 0), 3);
+        const alpha = Float32Array.from({length: SIZE*SIZE}, (_, p) => Math.min(1, widened[p*4+3]/255*3) * frameRegion[p*4+3]/255);
+        if (alpha.reduce((sum, a) => sum + a, 0) < 80) return null;
+        if (skinMasks[k]) {
+          const g = skinMasks[k].getContext('2d');
+          const cover = new ImageData(SIZE, SIZE);
+          for (let p = 0; p < alpha.length; p++) { cover.data.fill(255, p*4, p*4+3); cover.data[p*4+3] = 255*alpha[p]; }
+          const stamp = document.createElement('canvas');
+          stamp.width = stamp.height = SIZE;
+          stamp.getContext('2d').putImageData(cover, 0, 0);
+          g.drawImage(stamp, 0, 0);
+        }
+        return alpha;
       });
       const skinPixels = skinMasks.map(mask => mask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
       // Mixing weights fade out gradually inside each skin edge, so where one
@@ -423,22 +443,42 @@
         }
       }
       const sourcePixels = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      frames.forEach((alpha, k) => {
+        if (!alpha) return;
+        const filled = pushPullFill(sourcePixels[k], alpha.map(a => (1-a)**4));
+        for (let p = 0; p < alpha.length; p++) {
+          if (alpha[p] < .01) continue;
+          for (let channel = 0; channel < 3; channel++)
+            sourcePixels[k][p*4+channel] += (filled[p*4+channel] - sourcePixels[k][p*4+channel]) * alpha[p];
+        }
+      });
       if (skinWeight[0] && skinWeight[1]) {
-        // Only the forehead: between the outer brow ends, down to just above
-        // the eyes, and never over either person's brows.
-        const eyeTop = Math.min(...[159, 386].map(i => mid[i].y)) - 8;
-        const foreheadSides = [Math.min(mid[70].x, mid[300].x), Math.max(mid[70].x, mid[300].x)];
-        const brows = softMask(g => {
-          for (const ids of [[70, 63, 105, 66, 107, 46, 53, 52, 65, 55], [336, 296, 334, 293, 300, 285, 295, 282, 283, 276]]) {
+        // Anywhere on the face (the landmark outline, plus the forehead above
+        // it up to wherever the hair starts), except brows, eyes, and mouth,
+        // which each person keeps as their own.
+        const region = softMask(g => {
+          traceFaceOval(g, mid, 1); g.fill();
+          const arc = [54, 103, 67, 109, 10, 338, 297, 332, 284].map(i => mid[i]);
+          g.beginPath();
+          g.moveTo(arc[0].x, 0);
+          for (const point of arc) g.lineTo(point.x, point.y);
+          g.lineTo(arc.at(-1).x, 0);
+          g.fill();
+          g.globalCompositeOperation = 'destination-out';
+          const features = [[70, 63, 105, 66, 107, 46, 53, 52, 65, 55], [336, 296, 334, 293, 300, 285, 295, 282, 283, 276],
+            [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246],
+            [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398],
+            [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185]];
+          for (const ids of features) {
             const xs = ids.map(i => mid[i].x), ys = ids.map(i => mid[i].y);
             g.beginPath();
             g.ellipse((Math.min(...xs)+Math.max(...xs))/2, (Math.min(...ys)+Math.max(...ys))/2,
               (Math.max(...xs)-Math.min(...xs))/2 + 10, (Math.max(...ys)-Math.min(...ys))/2 + 10, 0, 0, Math.PI*2);
             g.fill();
           }
-        }, 6);
+        }, 10);
         const ownWeight = skinWeight.map(weight => weight.slice()), ownSkin = skinAlpha.map(skin => skin.slice());
-        for (let k = 0; k < 2; k++) fillHiddenForehead(sourcePixels[k], skinAlpha[k], skinWeight[k], sourcePixels[1-k], ownWeight[k], ownSkin[1-k], eyeTop, foreheadSides, brows);
+        for (let k = 0; k < 2; k++) fillHiddenSkin(sourcePixels[k], skinAlpha[k], skinWeight[k], sourcePixels[1-k], ownWeight[k], ownSkin[1-k], region);
       }
       // The face slider chooses the underlying skin and body. Hair choice only
       // supplies the separate hair overlay; otherwise switching hairstyles
@@ -448,16 +488,28 @@
       const studioBackground = document.querySelector('input[name="background"]:checked').value === 'studio';
       const bodyMask = studioBackground ? warpedMask(faces[bodyOwner], 'bodyMask', mid) : null;
       const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
-      const selectedMask = !hairFace?.hairMask ? null
-        : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairMask', mid);
+      const selectedMask = !hairFace?.hairUnion ? null
+        : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairUnion', mid);
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
+      // Soft hair edges carry the old background's colour (a red flag becomes a
+      // red fringe). On a clean background, edge pixels take the colour of
+      // nearby solid hair instead.
+      const hairImage = selectedMask && hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
+      const hairAlpha = selectedMask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+      if (hairImage && bodyMask) {
+        const solid = Float32Array.from({length: SIZE*SIZE}, (_, p) => (hairAlpha[p*4+3]/255)**4);
+        const inner = pushPullFill(hairImage.data, solid);
+        for (let p = 0; p < solid.length; p++)
+          for (let channel = 0; channel < 3; channel++)
+            hairImage.data[p*4+channel] = hairImage.data[p*4+channel]*solid[p] + inner[p*4+channel]*(1-solid[p]);
+      }
       if (bodyMask) {
         const mask = bodyMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
         const body = sourcePixels[bodyOwner];
         // A widened copy of the chosen hair sits under the face, so the soft
         // seam between skin and hair shows that hair's photo instead of white.
         const backing = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 5);
-        const hairPhoto = backing && hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        const hairPhoto = backing && hairImage.data;
         for (let i = 0; i < output.data.length; i += 4) {
           const person = mask[i+3]/255;
           const under = backing ? Math.min(1, backing[i+3]/255*2.5) : 0;
@@ -494,16 +546,17 @@
         }
         output.data[i+3] = 255;
       }
-      matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)));
+      // Skin right under the chosen hair is naturally shadowed; leave it be
+      // rather than brightening it into a pale rim.
+      const nearHair = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 8);
+      matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)), nearHair);
       ctx.putImageData(output, 0, 0);
       if (selectedMask) {
-        latestSelectedHairMask = selectedMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
+        latestSelectedHairMask = hairAlpha;
+        for (let i = 3; i < hairImage.data.length; i += 4) hairImage.data[i] = hairAlpha[i];
         const overlay = document.createElement('canvas');
         overlay.width = overlay.height = SIZE;
-        const overlayContext = overlay.getContext('2d');
-        overlayContext.drawImage(hairLayer, 0, 0);
-        overlayContext.globalCompositeOperation = 'destination-in';
-        overlayContext.drawImage(selectedMask, 0, 0);
+        overlay.getContext('2d').putImageData(hairImage, 0, 0);
         ctx.drawImage(overlay, 0, 0);
       }
       frame.classList.add('ready');
@@ -516,34 +569,34 @@
       const bodyPending = faces.slice(0, 2).some(face => !face.bodyMask && !face.bodyMaskFailed);
       setStatus(studioBackground && bodyFailed ? 'Ready to download. Background separation unavailable for this photo.' : masksFailed ? 'Ready to download. Some hair edges use approximate alignment.' : (masksPending || bodyPending) ? 'Ready to download. Separating hair, skin, and background…' : 'Ready to download.');
     }
-    // Where one person's hair hides forehead that the other person shows, the
-    // hidden skin is missing from the photo. Rebuild it: a smooth fill spreads
-    // this person's own nearby skin tone under the hair, and fine texture is
-    // borrowed from the other photo so it doesn't look airbrushed. Afterwards
-    // both people count as skin there, so the blend has no edge to show.
-    function fillHiddenForehead(pixels, skin, weight, other, ownWeight, otherSkin, eyeTop, [left, right], brows) {
+    // Where one person's hair hides skin that the other person shows, that
+    // skin is missing from the photo. Rebuild it from the other person's real
+    // skin there (keeping its natural shading and texture), shifted to this
+    // person's colouring. The shift is measured where both show skin and
+    // spread smoothly into the gap. Afterwards both people count as skin
+    // there, so the blend has no edge to show.
+    function fillHiddenSkin(pixels, skin, weight, other, ownWeight, otherSkin, region) {
       // Pixels near a hairline are often part hair or shadow, so partial
       // confidence is trusted much less than it would be linearly.
       const trust = ownWeight.map(w => w*w*w);
       const hole = new Float32Array(SIZE*SIZE);
       let total = 0;
       for (let p = 0; p < hole.length; p++) {
-        const x = p % SIZE, y = Math.floor(p/SIZE);
-        const inside = Math.max(0, Math.min(1, (eyeTop - y)/20, (x - left)/20, (right - x)/20));
-        const above = inside * (1 - brows[p*4+3]/255);
-        hole[p] = Math.max(0, otherSkin[p] - ownWeight[p]) * above;
+        hole[p] = Math.max(0, otherSkin[p] - ownWeight[p]) * region[p*4+3]/255;
         total += hole[p];
       }
       if (total < 50) return;
-      const smooth = pushPullFill(pixels, trust);
-      const otherSoft = blurredPixels(other, 3);
+      const difference = new Uint8ClampedArray(SIZE*SIZE*4);
+      for (let i = 0; i < difference.length; i += 4)
+        for (let channel = 0; channel < 3; channel++) difference[i+channel] = 128 + pixels[i+channel] - other[i+channel];
+      const offset = pushPullFill(difference, trust.map((w, p) => w * otherSkin[p]));
       for (let p = 0; p < hole.length; p++) {
         if (hole[p] < .01) continue;
         const amount = (1-trust[p]) * Math.min(1, hole[p]/Math.max(.001, 1-ownWeight[p]));
         const i = p*4;
         for (let channel = 0; channel < 3; channel++) {
-          const texture = Math.max(-14, Math.min(14, other[i+channel] - otherSoft[i+channel]));
-          pixels[i+channel] = pixels[i+channel]*(1-amount) + (smooth[i+channel] + texture)*amount;
+          const rebuilt = other[i+channel] + offset[i+channel] - 128;
+          pixels[i+channel] = pixels[i+channel]*(1-amount) + rebuilt*amount;
         }
         weight[p] = Math.min(1, weight[p] + hole[p]);
         skin[p] = Math.max(skin[p], weight[p]);
@@ -575,20 +628,11 @@
       }
       return levels[0].getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
     }
-    function blurredPixels(pixels, radius) {
-      const raw = document.createElement('canvas'), soft = document.createElement('canvas');
-      raw.width = raw.height = soft.width = soft.height = SIZE;
-      raw.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), SIZE, SIZE), 0, 0);
-      const g = soft.getContext('2d');
-      g.filter = `blur(${radius}px)`;
-      g.drawImage(raw, 0, 0);
-      return g.getImageData(0, 0, SIZE, SIZE).data;
-    }
     // Where only one person's skin is available (the other's hair covered it),
     // the result is one person's forehead beside a mixed face. Nudge those areas
     // toward the nearby mixed tone. Canvas blur averages color weighted by alpha,
     // so each blur below is a local average of just the pixels it should see.
-    function matchUnmixedSkinTone(output, mixed, coverage, strength) {
+    function matchUnmixedSkinTone(output, mixed, coverage, strength, nearHair) {
       if (strength <= 0) return;
       const localAverage = alphaFor => {
         const image = new ImageData(SIZE, SIZE);
@@ -607,7 +651,7 @@
       const blendedTone = localAverage(p => mixed[p]*coverage[p]);
       const singleTone = localAverage(p => (1-mixed[p])*coverage[p]);
       for (let i = 0; i < output.data.length; i += 4) {
-        const p = i/4, amount = (1-mixed[p])*coverage[p]*strength;
+        const p = i/4, amount = (1-mixed[p])*coverage[p]*strength * (nearHair ? Math.max(0, 1 - nearHair[i+3]/255*2.5) : 1);
         if (amount < .01 || blendedTone[i+3] < 10 || singleTone[i+3] < 10) continue;
         for (let channel = 0; channel < 3; channel++)
           output.data[i+channel] += (blendedTone[i+channel]-singleTone[i+channel])*amount;
@@ -617,6 +661,24 @@
       if (scheduled) return;
       scheduled = true;
       requestAnimationFrame(render);
+    }
+    // The dedicated hair model has crisp edges but can miss light or highlighted
+    // hair (a fringe of bangs, grey streaks). The multiclass model's hair label
+    // is blockier but catches those, so it is shrunk a little and combined.
+    function mergeHair(face) {
+      const merged = document.createElement('canvas');
+      merged.width = merged.height = SIZE;
+      const g = merged.getContext('2d', { willReadFrequently: true });
+      if (face.coarseHairMask) {
+        g.filter = 'blur(4px)';
+        g.drawImage(face.coarseHairMask, 0, 0);
+        g.filter = 'none';
+        const shrunk = g.getImageData(0, 0, SIZE, SIZE);
+        for (let i = 3; i < shrunk.data.length; i += 4) shrunk.data[i] = Math.max(0, (shrunk.data[i]-150)*2.45);
+        g.putImageData(shrunk, 0, 0);
+      }
+      if (face.hairMask) g.drawImage(face.hairMask, 0, 0);
+      face.hairUnion = merged;
     }
     function refreshAfterMask() {
       if (faces[0] && faces[1]) {
@@ -838,6 +900,7 @@
         getHairSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
           [prepared.hairMask] = makeCategoryMasks(segmenter, prepared.aligned, label => label === 1);
+          mergeHair(prepared);
           refreshAfterMask();
         }).catch(error => {
           console.warn('Hair segmentation unavailable; using face outline.', error);
@@ -845,11 +908,12 @@
           prepared.maskFailed = true;
           refreshAfterMask();
         });
-        if (index !== 2) getPersonSegmenter().then(segmenter => {
+        getPersonSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
           // Multiclass labels: 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 accessories.
-          [prepared.bodyMask, prepared.skinMask] = makeCategoryMasks(segmenter, prepared.aligned,
-            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: true }), label => label === 3);
+          [prepared.bodyMask, prepared.skinMask, prepared.coarseHairMask, prepared.accessoryMask] = makeCategoryMasks(segmenter, prepared.aligned,
+            Object.assign(label => label >= 2 && label <= 5, { mainRegionsOnly: true }), label => label === 3, label => label === 1, label => label === 5);
+          mergeHair(prepared);
           refreshAfterMask();
         }).catch(error => {
           console.warn('Background separation unavailable; using original background.', error);
