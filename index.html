@@ -45,8 +45,6 @@
     .hair-choice label:has(input:checked) { border-color: #315eb8; background: #eef4ff; color: #244d9d; font-weight: 700; }
     .hair-choice label:has(input:disabled) { opacity: .55; cursor: not-allowed; }
     .hair-choice input { accent-color: #315eb8; margin-right: 5px; }
-    .hair-position { margin-top: 18px; }
-    .hair-position output { font-size: .85rem; }
     .tips { background: #f3f7fe; border: 1px solid #dce8fa; border-radius: 12px; margin-top: 24px; padding: 15px; color: #4b5d79; font-size: .86rem; line-height: 1.5; }
     .tips strong { color: #233752; }
     .photo-advice { background: #fff8e9; border: 1px solid #f1dbab; border-radius: 12px; margin-top: 16px; padding: 13px 15px; color: #665125; font-size: .84rem; line-height: 1.5; }
@@ -96,9 +94,6 @@
           <label><input type="radio" name="hair" value="b">Face B</label>
           <label><input type="radio" name="hair" value="reference" disabled>Hair reference</label>
         </div></fieldset>
-        <div class="hair-position"><div class="control-heading"><label for="hairPosition">Move selected hair up or down</label><output id="hairPositionValue" for="hairPosition">Centered</output></div><input id="hairPosition" type="range" min="-30" max="30" value="0"><div class="ends"><span>Higher</span><span>Lower</span></div></div>
-        <div class="hair-position"><div class="control-heading"><label for="hairWidth">Hair width</label><output id="hairWidthValue" for="hairWidth">100%</output></div><input id="hairWidth" type="range" min="80" max="120" value="100" disabled><div class="ends"><span>Narrower</span><span>Wider</span></div></div>
-        <div class="hair-position"><div class="control-heading"><label for="hairHeight">Hair height</label><output id="hairHeightValue" for="hairHeight">100%</output></div><input id="hairHeight" type="range" min="80" max="120" value="100" disabled><div class="ends"><span>Shorter</span><span>Taller</span></div></div>
         <fieldset class="hair-choice"><legend>Background</legend><div class="options"><label><input type="radio" name="background" value="studio" checked>Clean white</label><label><input type="radio" name="background" value="photo">Keep photo background</label></div></fieldset>
         <div class="tips"><strong>For best results</strong><br>Use one face per photo, looking toward the camera, with similar expressions and lighting. Hair and backgrounds may blend less naturally than facial features.</div>
         <div id="photoAdvice" class="photo-advice" role="status" hidden></div>
@@ -129,12 +124,6 @@
     const download = document.querySelector('#download');
     const slider = document.querySelector('#blend');
     const percent = document.querySelector('#percent');
-    const hairPosition = document.querySelector('#hairPosition');
-    const hairPositionValue = document.querySelector('#hairPositionValue');
-    const hairWidth = document.querySelector('#hairWidth');
-    const hairWidthValue = document.querySelector('#hairWidthValue');
-    const hairHeight = document.querySelector('#hairHeight');
-    const hairHeightValue = document.querySelector('#hairHeightValue');
     const photoAdvice = document.querySelector('#photoAdvice');
     const generate = document.querySelector('#generate');
     const finishedCanvas = document.querySelector('#finished');
@@ -203,27 +192,29 @@
       })().catch(error => { personSegmenterPromise = null; throw error; });
       return personSegmenterPromise;
     }
-    function makeCategoryMask(segmenter, image, includesCategory) {
+    function makeCategoryMasks(segmenter, image, ...includesCategory) {
       const prediction = segmenter.segment(image);
       const mask = prediction.categoryMask;
       if (!mask) throw new Error('No segmentation mask returned.');
       try {
         const labels = mask.getAsUint8Array();
-        const canvas = document.createElement('canvas');
-        canvas.width = mask.width; canvas.height = mask.height;
-        const g = canvas.getContext('2d');
-        const data = g.createImageData(canvas.width, canvas.height);
-        for (let i = 0; i < labels.length; i++) {
-          const j = 4*i;
-          data.data[j] = data.data[j+1] = data.data[j+2] = 255;
-          data.data[j+3] = includesCategory(labels[i]) ? 255 : 0;
-        }
-        g.putImageData(data, 0, 0);
-        if (canvas.width === SIZE && canvas.height === SIZE) return canvas;
-        const scaled = document.createElement('canvas');
-        scaled.width = scaled.height = SIZE;
-        scaled.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
-        return scaled;
+        return includesCategory.map(includes => {
+          const canvas = document.createElement('canvas');
+          canvas.width = mask.width; canvas.height = mask.height;
+          const g = canvas.getContext('2d');
+          const data = g.createImageData(canvas.width, canvas.height);
+          for (let i = 0; i < labels.length; i++) {
+            const j = 4*i;
+            data.data[j] = data.data[j+1] = data.data[j+2] = 255;
+            data.data[j+3] = includes(labels[i]) ? 255 : 0;
+          }
+          g.putImageData(data, 0, 0);
+          if (canvas.width === SIZE && canvas.height === SIZE) return canvas;
+          const scaled = document.createElement('canvas');
+          scaled.width = scaled.height = SIZE;
+          scaled.getContext('2d').drawImage(canvas, 0, 0, SIZE, SIZE);
+          return scaled;
+        });
       } finally { mask.close(); }
     }
     function loadImage(file) {
@@ -337,72 +328,6 @@
       if (affine(g, source, target)) g.drawImage(image, 0, 0);
       g.restore();
     }
-    function moveHairLayer(source, offset) {
-      if (!offset) return source;
-      const moved = document.createElement('canvas');
-      moved.width = moved.height = SIZE;
-      const g = moved.getContext('2d');
-      g.drawImage(source, 0, offset);
-      // Extend the outermost row so shifting the photo cannot leave an empty band.
-      if (offset > 0) g.drawImage(source, 0, 0, SIZE, 1, 0, 0, SIZE, offset);
-      else g.drawImage(source, 0, SIZE-1, SIZE, 1, 0, SIZE+offset, SIZE, -offset);
-      return moved;
-    }
-    function fitSelectedHair(source, shape, width, height, offset) {
-      if (width === 1 && height === 1 && !offset) return source;
-      const fitted = document.createElement('canvas');
-      fitted.width = fitted.height = SIZE;
-      const g = fitted.getContext('2d');
-      const x = (shape[33].x + shape[263].x)/2;
-      const y = (shape[10].y + shape[1].y)/2;
-      g.translate(x, y+offset);
-      g.scale(width, height);
-      g.translate(-x, -y);
-      g.drawImage(source, 0, 0);
-      return fitted;
-    }
-    function foreheadSkinColors(sources, hairMasks, shape, preferred) {
-      const center = (shape[33].x+shape[263].x)/2;
-      const eyeY = (shape[33].y+shape[263].y)/2;
-      const span = Math.hypot(shape[33].x-shape[263].x, shape[33].y-shape[263].y);
-      const owners = [preferred, 1-preferred];
-      const references = owners.map(owner => cheekColor(sources[owner], shape));
-      const raw = new Array(SIZE);
-      for (let x = Math.max(0,Math.floor(center-span)); x < Math.min(SIZE,Math.ceil(center+span)); x++) {
-        for (let choice = 0; choice < 2; choice++) {
-          const owner = owners[choice], channels = [[],[],[]], reference = references[choice];
-          for (let y = Math.max(0,Math.floor(eyeY-span*.59)); y <= Math.min(SIZE-1,Math.floor(eyeY-span*.32)); y += 5) {
-            for (let dx = -10; dx <= 10; dx += 5) {
-              const px = x+dx;
-              if (px < 0 || px >= SIZE) continue;
-              const i = (y*SIZE+px)*4;
-              if (hairMasks[owner]?.[i+3] > 60) continue;
-              const lab = toOklab(sources[owner][i],sources[owner][i+1],sources[owner][i+2]);
-              if (Math.abs(lab[0]-reference[0]) > .18 || Math.abs(lab[1]-reference[1]) > .045 || Math.abs(lab[2]-reference[2]) > .055) continue;
-              for (let channel = 0; channel < 3; channel++) channels[channel].push(lab[channel]);
-            }
-          }
-          if (channels[0].length < 6) continue;
-          raw[x] = fromOklab(...channels.map(values => {
-            values.sort((a,b) => a-b);
-            return values[Math.floor(values.length/2)];
-          }));
-          break;
-        }
-      }
-      const fallback = fromOklab(...references[0]);
-      return Array.from({length:SIZE}, (_,x) => {
-        let sums = [0,0,0], total = 0;
-        for (let dx = -18; dx <= 18; dx += 3) {
-          const value = raw[x+dx];
-          if (!value) continue;
-          const weight = 1-Math.abs(dx)/20;
-          for (let channel = 0; channel < 3; channel++) sums[channel] += value[channel]*weight;
-          total += weight;
-        }
-        return total ? sums.map(sum => sum/total) : fallback;
-      });
-    }
     function warpedMask(face, sourceMask, mid, offset = 0) {
       if (!face?.[sourceMask]) return null;
       const mask = document.createElement('canvas');
@@ -434,7 +359,30 @@
           drawTriangle(g, faces[k].aligned, ids.map(j => faces[k].pts[j]), ids.map(j => mid[j]));
         }
       }
-      balanceLayerComplexions(mid, t);
+      const faceMasks = faces.slice(0, 2).map(face => warpedMask(face, 'hairMask', mid));
+      const hairPixels = faceMasks.map(mask => mask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      // The skin labels come from a coarse 256px pass that spills into the
+      // hairline; the sharper hair mask trims that spill back off.
+      const skinMasks = faces.slice(0, 2).map((face, k) => {
+        const skin = warpedMask(face, 'skinMask', mid);
+        if (!skin || !faceMasks[k]) return skin;
+        const g = skin.getContext('2d');
+        g.globalCompositeOperation = 'destination-out';
+        g.filter = 'blur(3px)';
+        g.drawImage(faceMasks[k], 0, 0);
+        g.drawImage(faceMasks[k], 0, 0);
+        g.globalCompositeOperation = 'source-over';
+        g.filter = 'none';
+        return skin;
+      });
+      const skinPixels = skinMasks.map(mask => mask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
+      // Mixing weights fade out gradually inside each skin edge, so where one
+      // person's hair covers their forehead the hand-off to the other person's
+      // skin is a gentle ramp rather than a seam.
+      const skinWeights = skinMasks.map(mask => mask && softMask(g => g.drawImage(mask, 0, 0), 14));
+      balanceLayerComplexions(mid, t, skinMasks);
+      latestHairMasks = hairPixels;
+      latestSelectedHairMask = null;
       const hair = document.querySelector('input[name="hair"]:checked').value;
       let hairLayer = layers[hair === 'b' ? 1 : 0];
       if (hair === 'reference' && faces[2]) {
@@ -446,78 +394,69 @@
           drawTriangle(hairContext, faces[2].aligned, ids.map(j => faces[2].pts[j]), ids.map(j => mid[j]));
         }
       }
-      const originalHairLayer = hairLayer;
-      const hairOffset = Number(hairPosition.value);
-      const selectedHairImage = fitSelectedHair(originalHairLayer, mid, Number(hairWidth.value)/100, Number(hairHeight.value)/100, hairOffset);
-      hairLayer = moveHairLayer(originalHairLayer, hairOffset);
-      const faceMasks = faces.slice(0, 2).map(face => warpedMask(face, 'hairMask', mid));
-      const hairPixels = faceMasks.map(mask => mask?.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
-      latestHairMasks = hairPixels;
-      latestSelectedHairMask = null;
       const sourcePixels = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data);
       // The face slider chooses the underlying skin and body. Hair choice only
       // supplies the separate hair overlay; otherwise switching hairstyles
       // exposes the other person's forehead around the face-oval feather.
       const bodyOwner = t < .5 ? 0 : 1;
+      const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
       const studioBackground = document.querySelector('input[name="background"]:checked').value === 'studio';
       const bodyMask = studioBackground ? warpedMask(faces[bodyOwner], 'bodyMask', mid) : null;
+      const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
+      const selectedMask = !hairFace?.hairMask ? null
+        : hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairMask', mid);
       const output = bodyMask ? ctx.createImageData(SIZE, SIZE) : hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE);
       if (bodyMask) {
         const mask = bodyMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
         const body = sourcePixels[bodyOwner];
+        // A widened copy of the chosen hair sits under the face, so the soft
+        // seam between skin and hair shows that hair's photo instead of white.
+        const backing = selectedMask && softMask(g => g.drawImage(selectedMask, 0, 0), 5);
+        const hairPhoto = backing && hairLayer.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
         for (let i = 0; i < output.data.length; i += 4) {
           const person = mask[i+3]/255;
-          for (let channel = 0; channel < 3; channel++) output.data[i+channel] = 255*(1-person)+body[i+channel]*person;
+          const under = backing ? Math.min(1, backing[i+3]/255*2.5) : 0;
+          for (let channel = 0; channel < 3; channel++) {
+            const base = 255*(1-person)+body[i+channel]*person;
+            output.data[i+channel] = under ? base*(1-under)+hairPhoto[i+channel]*under : base;
+          }
         }
       }
-      const boundary = faceOvalMask(mid, .96, 15);
-      // Face Mesh stops at the hairline. When the chosen hair leaves more
-      // forehead visible than the face oval covers, supply skin from an
-      // unobstructed forehead below instead of exposing the white background.
-      const eyeY = (mid[33].y + mid[263].y)/2;
-      const eyeSpan = Math.hypot(mid[33].x-mid[263].x, mid[33].y-mid[263].y);
-      const capTop = mid[10].y - eyeSpan*.64;
-      const capBottom = eyeY-25;
-      const foreheadCap = softMask(g => {
-        g.beginPath();
-        g.ellipse((mid[33].x+mid[263].x)/2, (capTop+capBottom)/2,
-          eyeSpan*.98, Math.max(1,(capBottom-capTop)/2), 0, 0, Math.PI*2);
-        g.fill();
-      }, 10);
-      const hairOwner = hair === 'b' ? 1 : hair === 'a' ? 0 : bodyOwner;
-      const foreheadColors = foreheadSkinColors(sourcePixels, hairPixels, mid, hairOwner);
+      // Face skin comes from the segmenter, so the forehead follows each
+      // person's real hairline. Until it arrives, the landmark oval minus hair
+      // stands in.
+      const oval = faceOvalMask(mid, .96, 15);
+      const dominant = Math.max(t, 1-t);
+      const mixed = new Float32Array(SIZE*SIZE), coverage = new Float32Array(SIZE*SIZE);
       for (let i = 0; i < output.data.length; i += 4) {
-        const a = (1-t) * (hairPixels[0] ? 1-hairPixels[0][i+3]/255 : 1);
-        const b = t * (hairPixels[1] ? 1-hairPixels[1][i+3]/255 : 1);
+        const skin = [0, 1].map(k => skinPixels[k] ? skinPixels[k][i+3]/255
+          : oval[i+3]/255 * (hairPixels[k] ? 1-hairPixels[k][i+3]/255 : 1));
+        const weight = [0, 1].map(k => skinWeights[k] ? Math.max(0, Math.min(1, (skinWeights[k][i+3]/255-.65)/.35)) : skin[k]);
+        // A trace of the plain skin keeps a colour source at edges where both
+        // mixing weights have faded to zero.
+        const a = (1-t) * (weight[0] + .01*skin[0]), b = t * (weight[1] + .01*skin[1]);
         const available = a+b;
-        const face = boundary[i+3]/255;
-        if (available > .01 && face > .002) {
+        // Show skin fully where the leading face has it, and wherever the
+        // chosen hair's owner has bare forehead that their hair would reveal.
+        const face = Math.min(1, Math.max(Math.max((1-t)*skin[0], t*skin[1])/dominant, skin[hairOwner]));
+        mixed[i/4] = Math.min(weight[0], weight[1]);
+        coverage[i/4] = face;
+        if (available > .0001 && face > .002) {
           for (let channel = 0; channel < 3; channel++) {
             const blended = (sourcePixels[0][i+channel]*a + sourcePixels[1][i+channel]*b)/available;
             output.data[i+channel] = output.data[i+channel]*(1-face)+blended*face;
           }
         }
-        const y = Math.floor(i/4/SIZE);
-        const eyebrowFade = Math.max(0, Math.min(1, (eyeY-43-y)/44));
-        const cap = foreheadCap[i+3]/255 * eyebrowFade * .96;
-        if (cap > .005) {
-          const x = (i/4)%SIZE;
-          for (let channel = 0; channel < 3; channel++) output.data[i+channel] =
-            output.data[i+channel]*(1-cap)+foreheadColors[x][channel]*cap;
-        }
         output.data[i+3] = 255;
       }
+      matchUnmixedSkinTone(output, mixed, coverage, Math.min(1, 4*Math.min(t, 1-t)));
       ctx.putImageData(output, 0, 0);
-      const hairFace = faces[hair === 'reference' ? 2 : hair === 'b' ? 1 : 0];
-      hairWidth.disabled = hairHeight.disabled = !hairFace?.hairMask;
-      if (hairFace?.hairMask) {
-        const baseMask = hair !== 'reference' ? faceMasks[hair === 'b' ? 1 : 0] : warpedMask(hairFace, 'hairMask', mid);
-        const selectedMask = fitSelectedHair(baseMask, mid, Number(hairWidth.value)/100, Number(hairHeight.value)/100, hairOffset);
+      if (selectedMask) {
         latestSelectedHairMask = selectedMask.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
         const overlay = document.createElement('canvas');
         overlay.width = overlay.height = SIZE;
         const overlayContext = overlay.getContext('2d');
-        overlayContext.drawImage(selectedHairImage, 0, 0);
+        overlayContext.drawImage(hairLayer, 0, 0);
         overlayContext.globalCompositeOperation = 'destination-in';
         overlayContext.drawImage(selectedMask, 0, 0);
         ctx.drawImage(overlay, 0, 0);
@@ -529,8 +468,37 @@
       const masksFailed = faces.some(face => face?.maskFailed);
       const masksPending = faces.some(face => face && !face.hairMask && !face.maskFailed);
       const bodyFailed = faces[bodyOwner]?.bodyMaskFailed;
-      const bodyPending = !faces[bodyOwner]?.bodyMask && !bodyFailed;
-      setStatus(studioBackground && bodyFailed ? 'Ready to download. Background separation unavailable for this photo.' : masksFailed ? 'Ready to download. Some hair edges use approximate alignment.' : (masksPending || (studioBackground && bodyPending)) ? 'Ready to download. Separating hair and background…' : 'Ready to download.');
+      const bodyPending = faces.slice(0, 2).some(face => !face.bodyMask && !face.bodyMaskFailed);
+      setStatus(studioBackground && bodyFailed ? 'Ready to download. Background separation unavailable for this photo.' : masksFailed ? 'Ready to download. Some hair edges use approximate alignment.' : (masksPending || bodyPending) ? 'Ready to download. Separating hair, skin, and background…' : 'Ready to download.');
+    }
+    // Where only one person's skin is available (the other's hair covered it),
+    // the result is one person's forehead beside a mixed face. Nudge those areas
+    // toward the nearby mixed tone. Canvas blur averages color weighted by alpha,
+    // so each blur below is a local average of just the pixels it should see.
+    function matchUnmixedSkinTone(output, mixed, coverage, strength) {
+      if (strength <= 0) return;
+      const localAverage = alphaFor => {
+        const image = new ImageData(SIZE, SIZE);
+        for (let i = 0; i < image.data.length; i += 4) {
+          image.data[i] = output.data[i]; image.data[i+1] = output.data[i+1]; image.data[i+2] = output.data[i+2];
+          image.data[i+3] = 255*alphaFor(i/4);
+        }
+        const raw = document.createElement('canvas'), soft = document.createElement('canvas');
+        raw.width = raw.height = soft.width = soft.height = SIZE;
+        raw.getContext('2d').putImageData(image, 0, 0);
+        const g = soft.getContext('2d', { willReadFrequently: true });
+        g.filter = 'blur(28px)';
+        g.drawImage(raw, 0, 0);
+        return g.getImageData(0, 0, SIZE, SIZE).data;
+      };
+      const blendedTone = localAverage(p => mixed[p]*coverage[p]);
+      const singleTone = localAverage(p => (1-mixed[p])*coverage[p]);
+      for (let i = 0; i < output.data.length; i += 4) {
+        const p = i/4, amount = (1-mixed[p])*coverage[p]*strength;
+        if (amount < .01 || blendedTone[i+3] < 10 || singleTone[i+3] < 10) continue;
+        for (let channel = 0; channel < 3; channel++)
+          output.data[i+channel] += (blendedTone[i+channel]-singleTone[i+channel])*amount;
+      }
     }
     function scheduleRender() {
       if (scheduled) return;
@@ -604,9 +572,10 @@
       if (!channels[0].length) return toOklab(170, 130, 115);
       return channels.map(a => { a.sort((x,y) => x-y); return a[Math.floor(a.length*.5)]; });
     }
-    function skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy) {
+    function skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skin = null) {
       return softMask(g => {
-        traceFaceOval(g, shape, .98); g.fill();
+        if (skin) g.drawImage(skin, 0, 0);
+        else { traceFaceOval(g, shape, .98); g.fill(); }
         g.globalCompositeOperation = 'destination-out';
         for (const ends of [[33,133],[362,263]]) {
           const a = shape[ends[0]], b = shape[ends[1]];
@@ -617,7 +586,7 @@
         g.beginPath(); g.ellipse(mouthX,mouthY,mouthRx*1.08,mouthRy*1.08,0,0,Math.PI*2); g.fill();
       }, 8);
     }
-    function balanceLayerComplexions(shape, t) {
+    function balanceLayerComplexions(shape, t, skinMasks = []) {
       const images = layers.map(layer => layer.getContext('2d').getImageData(0, 0, SIZE, SIZE));
       const cheeks = images.map(image => cheekColor(image.data, shape));
       const target = cheeks[0].map((value, i) => value*(1-t) + cheeks[1][i]*t);
@@ -626,8 +595,8 @@
       const mouthY = (shape[0].y + shape[17].y)/2;
       const mouthRx = Math.max(17, Math.hypot(shape[61].x-shape[291].x, shape[61].y-shape[291].y)*.68);
       const mouthRy = Math.max(16, Math.hypot(shape[0].x-shape[17].x, shape[0].y-shape[17].y)*1.16);
-      const mask = skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy);
       images.forEach((image, index) => {
+        const mask = skinMaskFor(shape, mouthX, mouthY, mouthRx, mouthRy, skinMasks[index]);
         const sourceRgb = fromOklab(...cheeks[index]);
         const shift = targetRgb.map((value, channel) => Math.max(-30, Math.min(30, value-sourceRgb[channel])));
         const pixels = image.data;
@@ -726,7 +695,6 @@
       invalidateFinished();
       if (index !== 2) {
         faces[index] = null;
-        hairWidth.disabled = hairHeight.disabled = true;
         updatePhotoAdvice();
         generate.disabled = true;
         download.disabled = true;
@@ -751,16 +719,12 @@
           const option = document.querySelector('input[name="hair"][value="reference"]');
           option.disabled = false;
           option.checked = true;
-          hairPosition.value = '0';
-          hairPositionValue.textContent = 'Centered';
-          hairWidth.value = hairHeight.value = '100';
-          hairWidthValue.textContent = hairHeightValue.textContent = '100%';
         }
         if (faces[0] && faces[1]) scheduleRender();
         else setStatus('Add the second photo.');
         getHairSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
-          prepared.hairMask = makeCategoryMask(segmenter, prepared.aligned, label => label === 1);
+          [prepared.hairMask] = makeCategoryMasks(segmenter, prepared.aligned, label => label === 1);
           refreshAfterMask();
         }).catch(error => {
           console.warn('Hair segmentation unavailable; using face outline.', error);
@@ -770,7 +734,8 @@
         });
         if (index !== 2) getPersonSegmenter().then(segmenter => {
           if (ticket !== generation[index]) return;
-          prepared.bodyMask = makeCategoryMask(segmenter, prepared.aligned, label => label >= 2 && label <= 5);
+          // Multiclass labels: 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 accessories.
+          [prepared.bodyMask, prepared.skinMask] = makeCategoryMasks(segmenter, prepared.aligned, label => label >= 2 && label <= 5, label => label === 3);
           refreshAfterMask();
         }).catch(error => {
           console.warn('Background separation unavailable; using original background.', error);
@@ -794,28 +759,7 @@
       invalidateFinished();
       scheduleRender();
     });
-    document.querySelectorAll('input[name="hair"]').forEach(option => option.addEventListener('change', () => {
-      hairPosition.value = '0';
-      hairPositionValue.textContent = 'Centered';
-      hairWidth.value = hairHeight.value = '100';
-      hairWidthValue.textContent = hairHeightValue.textContent = '100%';
-      invalidateFinished();
-      scheduleRender();
-    }));
-    hairPosition.addEventListener('input', () => {
-      const offset = Number(hairPosition.value);
-      hairPositionValue.textContent = offset < 0 ? `Up ${-offset}` : offset > 0 ? `Down ${offset}` : 'Centered';
-      invalidateFinished();
-      scheduleRender();
-    });
-    for (const [control, value] of [[hairWidth, hairWidthValue], [hairHeight, hairHeightValue]]) {
-      control.addEventListener('input', () => {
-        value.textContent = `${control.value}%`;
-        invalidateFinished();
-        scheduleRender();
-      });
-    }
-    document.querySelectorAll('input[name="background"]').forEach(option => option.addEventListener('change', () => {
+    document.querySelectorAll('input[name="hair"], input[name="background"]').forEach(option => option.addEventListener('change', () => {
       invalidateFinished();
       scheduleRender();
     }));
