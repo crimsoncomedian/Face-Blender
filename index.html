@@ -659,6 +659,22 @@
           const mask = maskCanvas.getContext('2d').getImageData(0, 0, SIZE, SIZE).data;
           const alpha = Float32Array.from({length: SIZE*SIZE}, (_, p) => mask[p*4+3]/255);
           let body = tinted(owner);
+          // The body's own neck edge carries strands and shadow of its owner's
+          // hair; lift that toward the clean neck skin next to it.
+          if (faceMasks[owner] && neckTints?.[owner]) {
+            const neck = neckTints[owner].mask;
+            const nearOwnHair = softMask(g => g.drawImage(faceMasks[owner], 0, 0), 10);
+            const clean = pushPullFill(body, Float32Array.from({length: SIZE*SIZE}, (_, p) => ((neck[p*4+3]/255) * (1 - Math.min(1, nearOwnHair[p*4+3]/255*3))) ** 3));
+            body = new Uint8ClampedArray(body);
+            for (let p = 0; p < SIZE*SIZE; p++) {
+              const i = p*4, amount = Math.min(1, nearOwnHair[i+3]/255*3) * alpha[p];
+              if (amount < .01) continue;
+              for (let channel = 0; channel < 3; channel++) {
+                const lift = Math.max(1, Math.min(1.8, clean[i+channel] / Math.max(1, body[i+channel])));
+                body[i+channel] *= 1 + (lift - 1)*amount;
+              }
+            }
+          }
           const other = 1 - owner;
           const otherMask = faceMasks[owner] && (hair === 'reference' || hairOwner !== owner) && bodyMaskFor(other);
           if (otherMask) {
@@ -735,7 +751,7 @@
       const oval = faceOvalMask(mid, .96, 15);
       const dominant = Math.max(t, 1-t);
       const mixed = new Float32Array(SIZE*SIZE), coverage = new Float32Array(SIZE*SIZE);
-      const pureSkin = new Uint8ClampedArray(SIZE*SIZE*4), pureWeight = new Float32Array(SIZE*SIZE);
+      const pureSkin = new Uint8ClampedArray(SIZE*SIZE*4), pureWeight = new Float32Array(SIZE*SIZE), confidence = new Float32Array(SIZE*SIZE);
       for (let i = 0; i < output.data.length; i += 4) {
         const skin = [0, 1].map(k => skinAlpha[k] ? skinAlpha[k][i/4]
           : oval[i+3]/255 * (hairPixels[k] ? 1-hairPixels[k][i+3]/255 : 1));
@@ -756,8 +772,26 @@
             pureSkin[i+channel] = blended;
           }
           pureWeight[i/4] = face ** 8;
+          confidence[i/4] = Math.max(weight[0], weight[1]);
         }
         output.data[i+3] = 255;
+      }
+      // At the outer edge of the face both mixing weights fade out and the
+      // colour came from raw edge pixels, which are often strands or shadow of
+      // a person's own hair: a thin dark outline around the face. Where
+      // confidence is low, use clean skin extended from confident pixels.
+      {
+        const clean = pushPullFill(pureSkin, confidence.map(c => c**4));
+        for (let p = 0; p < SIZE*SIZE; p++) {
+          const i = p*4, face = coverage[p];
+          if (face < .002 || confidence[p] > .99) continue;
+          const keep = confidence[p]**2;
+          for (let channel = 0; channel < 3; channel++) {
+            const fixed = pureSkin[i+channel]*keep + clean[i+channel]*(1-keep);
+            output.data[i+channel] += (fixed - pureSkin[i+channel]) * face;
+            pureSkin[i+channel] = fixed;
+          }
+        }
       }
       // Skin right under the chosen hair is naturally shadowed; leave it be
       // rather than brightening it into a pale rim.
